@@ -56,7 +56,7 @@ def intent_view(db: Session, intent: PaymentIntent) -> dict:
         },
         "signatures_required": intent.signatures_required,
         "signatures_passed": intent.signatures_passed,
-        "attempts_left": svc.MAX_ATTEMPTS - intent.attempts,
+        "attempts_left": svc.attempts_left(intent),
         "location_verified": intent.location_verified,
         "confirmed_by": intent.shop_confirmed_by,
         "simulated": intent.simulated,

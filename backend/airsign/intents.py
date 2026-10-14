@@ -28,7 +28,8 @@ from .signal.siamese import get_model
 
 INTENT_TTL = timedelta(minutes=10)
 NONCE_TTL = timedelta(seconds=120)
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 3  # failed signatures before the intent locks (FR-10)
+MAX_SUBMISSIONS = 5  # all signatures, so tier 3 (two passes) still allows three failures
 SENSOR_FLAGS_TO_REJECT = 2
 
 TERMINAL = {"COMPLETED", "LOCKED", "EXPIRED", "CANCELLED", "FAILED"}
@@ -61,6 +62,12 @@ def local_now() -> datetime:
 
 def money(cents: int) -> str:
     return f"{cents // 100}.{cents % 100:02d}"
+
+
+def attempts_left(intent: PaymentIntent) -> int:
+    """Failed signatures still allowed. Accepted signatures do not use one up."""
+    failures = intent.attempts - intent.signatures_passed
+    return max(0, min(MAX_ATTEMPTS - failures, MAX_SUBMISSIONS - intent.attempts))
 
 
 def transition(db: Session, intent: PaymentIntent, to: str, actor: str, **details) -> None:
@@ -262,6 +269,7 @@ MESSAGES = {
     "partial": "First signature accepted. This payment needs a second one.",
     "reject": "Signature did not match. {left} attempt{s} left.",
     "locked": "Three signatures did not match, so this payment is locked. Your account is not affected. Ask the cashier to start again.",
+    "too_many": "This payment needed too many signatures, so it is locked. Your account is not affected. Ask the cashier to start again.",
     "replay": "This looks like a recording of an earlier signature, not a live one. The payment is locked.",
     "synthetic": "The motion data does not look like it came from a phone's sensors.",
 }
@@ -277,7 +285,9 @@ def _consume_nonce(db: Session, intent_id: str, user: User, nonce: str) -> Payme
             PaymentIntent.state == "ARMED",
             PaymentIntent.nonce_hash == hash_nonce(nonce, intent_id),
             PaymentIntent.nonce_expires_at > now(),
-            PaymentIntent.attempts < MAX_ATTEMPTS,
+            # attempts counts every scored signature; the passed ones are not failures
+            PaymentIntent.attempts - PaymentIntent.signatures_passed < MAX_ATTEMPTS,
+            PaymentIntent.attempts < MAX_SUBMISSIONS,
         )
         .values(state="SIGNING", nonce_hash=None, attempts=PaymentIntent.attempts + 1, updated_at=now())
     )
@@ -337,13 +347,15 @@ def signoff(db: Session, intent_id: str, user: User, nonce: str, payload: dict) 
             intent.signatures_required = 2
         if intent.signatures_passed >= intent.signatures_required:
             reason, to = MESSAGES["accept"], "VERIFIED"
+        elif intent.attempts >= MAX_SUBMISSIONS:  # defensive: three failures lock first
+            reason, to = MESSAGES["too_many"], "LOCKED"
         else:
             reason = MESSAGES["step_up"] if decision == verify.STEP_UP else MESSAGES["partial"]
             to = "PARTIAL"
         biometrics.add_fingerprint(db, user.id, fingerprint(cand.X_fixed))
 
     if to is None:  # a rejection that does not lock by itself
-        left = MAX_ATTEMPTS - intent.attempts
+        left = attempts_left(intent)
         if left <= 0:
             to, reason = "LOCKED", MESSAGES["locked"]
         else:
@@ -418,7 +430,7 @@ def _result(intent: PaymentIntent, decision: str, reason: str, *, nonce=None, sc
         "decision": decision,
         "reason": reason,
         "state": intent.state,
-        "attempts_left": MAX_ATTEMPTS - intent.attempts,
+        "attempts_left": attempts_left(intent),
         "signatures_passed": intent.signatures_passed,
         "signatures_required": intent.signatures_required,
         "nonce": nonce,

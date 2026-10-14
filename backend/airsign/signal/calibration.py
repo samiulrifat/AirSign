@@ -25,6 +25,10 @@ class Calibration:
     step_up_margin: float = 0.5
     # sigma comes from only 5 to 10 leave-one-out scores, so it is often too small
     sigma_floor_fraction: float = 0.5
+    # Absolute minimum for the DTW sigma. Channels are standardized, so DTW distances
+    # share one scale across people; this stops an unusually consistent enrollment
+    # from making the threshold impossibly tight. Not applied to neural distances.
+    sigma_floor_abs: float = 0.3
     # which score decides when the neural model is available: dtw, nn, fused or and
     method: str = "fused"
     fusion_w: float = 0.5
@@ -72,5 +76,5 @@ def combine(z_dtw: float, z_nn: float | None, cal: Calibration) -> tuple[float, 
     return cal.fusion_w * z_dtw + (1 - cal.fusion_w) * z_nn, "fused"
 
 
-def zscore(s: float, mu: float, sd: float, cal: Calibration) -> float:
-    return (s - mu) / max(sd, cal.sigma_floor_fraction * mu, 1e-6)
+def zscore(s: float, mu: float, sd: float, cal: Calibration, abs_floor: float = 0.0) -> float:
+    return (s - mu) / max(sd, cal.sigma_floor_fraction * mu, abs_floor, 1e-6)

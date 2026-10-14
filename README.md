@@ -117,7 +117,7 @@ On synthetic people only (8 people, leave-one-person-out), the tier 1 results we
 
 | Method | Genuine accepted | Imitations accepted |
 |---|---|---|
-| DTW | 95.8% | 7.5% |
+| DTW | 96.7% | 0% |
 | Siamese CNN | 94.2% | 0% |
 
 These numbers demonstrate the pipeline, not real-world accuracy. Real numbers come from the lab.
@@ -184,7 +184,8 @@ We found these while building, and the code comments explain each one:
 - **Open-bill feature in shop ranking.** Without it, a first-time visitor in a multi-floor building always ties, and the popup could never suggest a shop.
 - **Separate replay bounds** for DTW distances and fingerprint distances, instead of one bound for two different scales.
 - **The receipt comes from the capture response**, and the webhook reconciles it. Sandbox webhooks can lag by seconds.
-- **Thresholds live in a config file** (`backend/models/thresholds.json`) and are applied when scoring, not baked into templates, so they can be retuned without anyone enrolling again. With only 5–10 enrollment repetitions the personal σ is unreliable, so the σ floor usually decides; calibration picks it from data.
+- **Thresholds live in a config file** (`backend/models/thresholds.json`) and are applied when scoring, not baked into templates, so they can be retuned without anyone enrolling again. With only 5–10 enrollment repetitions the personal σ is unreliable, so σ has a relative floor (a fraction of μ) and an absolute one. Channels are standardized, so DTW distances share one scale across people, and the absolute floor stops one lucky, very consistent enrollment from making the threshold impossibly tight. Calibration picks both from data.
+- **Three *failed* signatures lock a payment** (FR-10), not three signatures. Otherwise a tier 3 payment that went fail, fail, pass would wait forever for a second signature it could never submit.
 - **Rate limits** per IP and per user on sign-up, enrollment, payments, sign-off, check-in codes, the cashier PIN and the lab code (in memory, enough for one instance).
 - **The outlier gate** at enrollment also requires 1.5× the median, and drops at most two repetitions. With 7 samples the MAD alone drops normal repetitions.
 

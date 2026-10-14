@@ -34,16 +34,17 @@ from airsign.signal import calibration  # noqa: E402
 from airsign.signal.siamese import get_model  # noqa: E402
 
 FLOORS = [0.15, 0.25, 0.35, 0.5, 0.75, 1.0, 1.5]
+ABS_FLOORS = [0.0, 0.15, 0.3, 0.45, 0.6]  # DTW distance units
 # Share of genuine attempts each tier aims to accept when the attack cap allows it.
 GENUINE_TARGET = {1: 0.97, 2: 0.90}
 K_MAX = 25.0
 
 
-def z_of(s: evaluation.Scored, floor: float, method: str, w: float = 0.5) -> float:
+def z_of(s: evaluation.Scored, floor: float, method: str, w: float = 0.5, abs_floor: float = 0.0) -> float:
     if s.raw is None:
         return math.inf  # unusable recording: always a rejection
     r = s.raw
-    zd = (r["s_dtw"] - r["mu_dtw"]) / max(r["sd_dtw"], floor * r["mu_dtw"], 1e-6)
+    zd = (r["s_dtw"] - r["mu_dtw"]) / max(r["sd_dtw"], floor * r["mu_dtw"], abs_floor, 1e-6)
     if method == "dtw" or r["s_nn"] is None:
         return zd
     zn = (r["s_nn"] - r["mu_nn"]) / max(r["sd_nn"], floor * r["mu_nn"], 1e-6)
@@ -63,23 +64,28 @@ def k_for_far(attack: np.ndarray, far: float, fallback: float) -> float:
 
 def choose(scored: list[evaluation.Scored], methods: list[str], far1: float, far2: float) -> calibration.Calibration:
     best = None
+    defaults = calibration.Calibration()
     for method in methods:
         for floor in FLOORS:
-            gen = [z_of(s, floor, method) for s in scored if s.kind == "genuine"]
-            imi = [z_of(s, floor, method) for s in scored if s.kind == "imitation"]
-            imp = [z_of(s, floor, method) for s in scored if s.kind == "impostor"]
-            e = evaluation.eer(gen, imi or imp)
-            if e is None:
-                continue
-            e2 = evaluation.eer(gen, imp)
-            key = (e["eer"], e2["eer"] if e2 else 1.0, abs(floor - 0.5))  # equal error: stay near the default
-            if best is None or key < best[0]:
-                best = (key, method, floor, imi or imp)
+            for absf in ABS_FLOORS:
+                gen = [z_of(s, floor, method, abs_floor=absf) for s in scored if s.kind == "genuine"]
+                imi = [z_of(s, floor, method, abs_floor=absf) for s in scored if s.kind == "imitation"]
+                imp = [z_of(s, floor, method, abs_floor=absf) for s in scored if s.kind == "impostor"]
+                e = evaluation.eer(gen, imi or imp)
+                if e is None:
+                    continue
+                e2 = evaluation.eer(gen, imp)
+                # On equal error, stay near the defaults.
+                near = abs(floor - defaults.sigma_floor_fraction) + abs(absf - defaults.sigma_floor_abs)
+                key = (e["eer"], e2["eer"] if e2 else 1.0, near)
+                if best is None or key < best[0]:
+                    best = (key, method, floor, absf)
     if best is None:
         return calibration.Calibration(source="defaults: not enough data to calibrate")
-    _, method, floor, attack = best
-    attack = np.array([z_of(s, floor, method) for s in scored if s.kind == ("imitation" if any(x.kind == "imitation" for x in scored) else "impostor")])
-    gen = np.array([z_of(s, floor, method) for s in scored if s.kind == "genuine"])
+    _, method, floor, absf = best
+    attack_kind = "imitation" if any(x.kind == "imitation" for x in scored) else "impostor"
+    attack = np.array([z_of(s, floor, method, abs_floor=absf) for s in scored if s.kind == attack_kind])
+    gen = np.array([z_of(s, floor, method, abs_floor=absf) for s in scored if s.kind == "genuine"])
     gen = gen[np.isfinite(gen)]
     # No more lenient than needed: accept the target share of genuine attempts,
     # but never past the attack cap. When the two do not overlap, k lands on the
@@ -90,6 +96,7 @@ def choose(scored: list[evaluation.Scored], methods: list[str], far1: float, far
         tier_k={1: round(k1, 3), 2: round(k2, 3), 3: round(k2, 3)},
         step_up_margin=round(min(0.5, 0.25 * k1), 3),
         sigma_floor_fraction=floor,
+        sigma_floor_abs=absf,
         method=method,
     )
 
@@ -100,7 +107,7 @@ def rates(scored: list[evaluation.Scored], cal: calibration.Calibration) -> dict
         k = cal.k(tier)
         row = {}
         for kind in ("genuine", "imitation", "impostor"):
-            zs = [z_of(s, cal.sigma_floor_fraction, cal.method, cal.fusion_w) for s in scored if s.kind == kind]
+            zs = [z_of(s, cal.sigma_floor_fraction, cal.method, cal.fusion_w, cal.sigma_floor_abs) for s in scored if s.kind == kind]
             row[kind] = (sum(z <= k for z in zs), len(zs))
         out[tier] = row
     return out
@@ -155,15 +162,16 @@ def main() -> None:
     for method in methods:
         rows = []
         for floor in FLOORS:
-            gen = [z_of(s, floor, method) for s in scored if s.kind == "genuine"]
-            imi = [z_of(s, floor, method) for s in scored if s.kind == "imitation"]
-            imp = [z_of(s, floor, method) for s in scored if s.kind == "impostor"]
-            e1, e2 = evaluation.eer(gen, imi), evaluation.eer(gen, imp)
-            rows.append((e1["eer"] if e1 else math.nan, e2["eer"] if e2 else math.nan))
+            for absf in ABS_FLOORS:
+                gen = [z_of(s, floor, method, abs_floor=absf) for s in scored if s.kind == "genuine"]
+                imi = [z_of(s, floor, method, abs_floor=absf) for s in scored if s.kind == "imitation"]
+                imp = [z_of(s, floor, method, abs_floor=absf) for s in scored if s.kind == "impostor"]
+                e1, e2 = evaluation.eer(gen, imi), evaluation.eer(gen, imp)
+                rows.append((e1["eer"] if e1 else math.nan, e2["eer"] if e2 else math.nan))
         b1, b2 = min(rows)
         print(f"| {method} | {100 * b1:.1f}% | {100 * b2:.1f}% |")
     print()
-    print(f"Method: {cal.method} · sigma floor {cal.sigma_floor_fraction} · tier 1 k = {cal.k(1)} · tier 2/3 k = {cal.k(2)} · step-up margin {cal.step_up_margin}\n")
+    print(f"Method: {cal.method} · sigma floor {cal.sigma_floor_fraction}×mu, at least {cal.sigma_floor_abs} · tier 1 k = {cal.k(1)} · tier 2/3 k = {cal.k(2)} · step-up margin {cal.step_up_margin}\n")
     if len(people) < 3:
         print("Warning: fewer than 3 people; these thresholds will not generalise.\n")
     ho = held_out(scored, methods, args.tier1_far, args.tier2_far) if len(people) >= 3 else None

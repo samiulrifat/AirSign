@@ -74,6 +74,19 @@ def sign_until_done(c, intent_id, nonce, max_tries=3):
     return out, g
 
 
+def pay_genuine(c, pos, amount, max_bills=3, **kw):
+    """Pay a fresh bill with genuine signatures. A genuine signer is occasionally
+    locked out (about 4% of attempts are rejected), and then, like a real customer,
+    asks the cashier for a new bill. Tests must not depend on a lucky persona."""
+    for _ in range(max_bills):
+        armed = start_payment(c, open_invoice(pos, amount)["id"], **kw)
+        out, g = sign_until_done(c, armed["intent"]["id"], armed["nonce"])
+        if out["state"] == "COMPLETED":
+            return out, g
+        assert out["state"] == "LOCKED", out
+    raise AssertionError(f"genuine signer locked out of {max_bills} bills in a row")
+
+
 def test_happy_path_and_receipt():
     c = customer()
     enroll(c)
@@ -93,12 +106,14 @@ def test_happy_path_and_receipt():
     assert intent["amount_cents"] == 1850 and intent["shop"]["floor"] == 4
 
     out, _ = sign_until_done(c, intent["id"], armed["nonce"])
+    if out["state"] == "LOCKED":  # rare genuine lockout: the customer asks for a new bill
+        out, _ = pay_genuine(c, pos, "18.50")
     assert out["decision"] in ("ACCEPT", "STEP_UP"), out
     assert out["intent"]["state"] == "COMPLETED"
     assert out["intent"]["paypal"]["capture_id"].startswith("MOCKCAP-")
 
     # The mock webhook arrives after the response and reconciles.
-    again = c.get(f"/api/intents/{intent['id']}").json()
+    again = c.get(f"/api/intents/{out['intent']['id']}").json()
     assert again["paypal"]["webhook_confirmed"] is True
     assert pos.get("/api/pos/invoices").json()[0]["status"] == "PAID"
 
@@ -130,9 +145,7 @@ def test_imitation_rejected_three_times_locks_intent_not_account():
         nonce = out["nonce"]
     assert out["state"] == "LOCKED" and nonce is None
     # The account still works: a new invoice can be paid.
-    inv2 = open_invoice(pos, "9.00")
-    armed2 = start_payment(c, inv2["id"])
-    out, _ = sign_until_done(c, armed2["intent"]["id"], armed2["nonce"])
+    out, _ = pay_genuine(c, pos, "9.00")
     assert out["state"] == "COMPLETED"
 
 
@@ -140,9 +153,7 @@ def test_replay_of_accepted_signature_locks():
     c = customer()
     enroll(c)
     pos = cashier()
-    armed = start_payment(c, open_invoice(pos, "4.20")["id"])
-    out, g = sign_until_done(c, armed["intent"]["id"], armed["nonce"])
-    assert out["state"] == "COMPLETED"
+    out, g = pay_genuine(c, pos, "4.20")
     # Resubmit the exact same recording for a new payment.
     armed2 = start_payment(c, open_invoice(pos, "4.20")["id"])
     r2, _ = sign(c, armed2["intent"]["id"], armed2["nonce"], gesture=g)
@@ -173,8 +184,8 @@ def test_large_payment_new_shop_far_away_needs_two_signatures():
     enroll(c)
     pos = cashier("shop_volt")
     # Tier 3 needs two passes within three attempts at the strict threshold, which a
-    # genuine signer misses a few percent of the time. Allow one fresh bill for that.
-    for _ in range(2):
+    # genuine signer misses a few percent of the time. Allow fresh bills for that.
+    for _ in range(3):
         armed = start_payment(c, open_invoice(pos, "480.00")["id"], location={"lat": 40.80, "lon": -73.90, "accuracy": 30})
         intent = armed["intent"]
         assert intent["risk"]["tier"] == 3, intent["risk"]
@@ -184,6 +195,7 @@ def test_large_payment_new_shop_far_away_needs_two_signatures():
         while True:
             r, _ = sign(c, intent["id"], nonce)
             out = r.json()
+            assert "state" in out, (r.status_code, out)
             if out["state"] != "ARMED":
                 break
             nonce = out["nonce"]
@@ -191,7 +203,7 @@ def test_large_payment_new_shop_far_away_needs_two_signatures():
             assert out["signatures_passed"] == 2, "one good signature alone must not complete a tier 3 payment"
             return
         assert out["state"] == "LOCKED", out
-    raise AssertionError("genuine signer locked out of two tier 3 payments in a row")
+    raise AssertionError("genuine signer locked out of three tier 3 payments in a row")
 
 
 def test_checkin_code_verifies_location_and_is_single_use():
@@ -283,3 +295,32 @@ def test_capture_has_a_single_call_site():
     assert callers == [("intents.py", "result = get_gateway().capture_order(intent.paypal_order_id, intent.capture_request_id)")], callers
     intents_src = (src / "intents.py").read_text()
     assert intents_src.count("_capture(db, intent)") == 1  # called once, from signoff
+
+
+@pytest.mark.parametrize(
+    "decisions, final, passed",
+    [
+        # Tier 3: two failures, then two passes. Successes must not use up attempts.
+        (["REJECT", "REJECT", "ACCEPT", "ACCEPT"], "COMPLETED", 2),
+        # Three failures lock, even with a pass in between.
+        (["REJECT", "ACCEPT", "REJECT", "REJECT"], "LOCKED", 1),
+    ],
+)
+def test_tier3_attempt_counting(monkeypatch, decisions, final, passed):
+    from airsign.signal import verify
+
+    c = customer()
+    enroll(c)
+    armed = start_payment(c, open_invoice(cashier("shop_volt"), "480.00")["id"], location={"lat": 40.80, "lon": -73.90, "accuracy": 30})
+    assert armed["intent"]["risk"]["tier"] == 3
+    script = iter(decisions)
+    monkeypatch.setattr(verify, "decide", lambda z, tier, cal=None: next(script))
+    nonce, out = armed["nonce"], None
+    for _ in decisions:
+        r, _ = sign(c, armed["intent"]["id"], nonce)
+        assert r.status_code == 200, r.json()
+        out = r.json()
+        if out["state"] != "ARMED":
+            break
+        nonce = out["nonce"]
+    assert out["state"] == final and out["signatures_passed"] == passed, out

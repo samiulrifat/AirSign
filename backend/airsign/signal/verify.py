@@ -37,7 +37,7 @@ def score(t: Template, c: Processed, model: SiameseModel | None = None, cal: cal
     cal = cal or calibration.get()
     dists = [dtw_distance(c.X, e) for e in t.X]
     s_dtw = nearest_mean(dists)
-    z_dtw = calibration.zscore(s_dtw, t.mu_dtw, t.sd_dtw, cal)
+    z_dtw = calibration.zscore(s_dtw, t.mu_dtw, t.sd_dtw, cal, cal.sigma_floor_abs)
 
     s_nn = z_nn = None
     if model is not None and t.proto is not None and t.model_version == model.version:
