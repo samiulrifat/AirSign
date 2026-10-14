@@ -1,0 +1,69 @@
+"""Settings from environment variables (prefix AIRSIGN_) or the .env file at the repo root."""
+
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import secrets
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = REPO_ROOT / "data"
+log = logging.getLogger("airsign")
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=REPO_ROOT / ".env", env_prefix="AIRSIGN_", extra="ignore"
+    )
+
+    database_url: str = f"sqlite:///{DATA_DIR / 'airsign.db'}"
+    # Signs session cookies. Generated and kept in data/dev-secrets.json when empty.
+    secret_key: str = ""
+    # base64 of 32 bytes. Wraps the per-user keys that encrypt signature templates.
+    master_key: str = ""
+
+    paypal_mode: Literal["mock", "sandbox"] = "mock"
+    paypal_client_id: str = ""
+    paypal_client_secret: str = ""
+    paypal_webhook_id: str = ""
+
+    # Lets judges generate labeled simulated gestures and locations.
+    allow_simulation: bool = True
+    # Set when served behind HTTPS so cookies are marked Secure.
+    secure_cookies: bool = False
+    currency: str = "USD"
+    # Local time zone of the demo shops, used for opening hours and the risk engine.
+    timezone: str = "America/New_York"
+
+
+def _dev_secrets() -> dict:
+    path = DATA_DIR / "dev-secrets.json"
+    if path.exists():
+        return json.loads(path.read_text())
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    values = {
+        "secret_key": secrets.token_urlsafe(32),
+        "master_key": base64.b64encode(secrets.token_bytes(32)).decode(),
+    }
+    path.write_text(json.dumps(values))
+    path.chmod(0o600)
+    log.warning("Generated development secrets in %s. Set AIRSIGN_SECRET_KEY and AIRSIGN_MASTER_KEY in production.", path)
+    return values
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    s = Settings()
+    if not s.secret_key or not s.master_key:
+        dev = _dev_secrets()
+        s.secret_key = s.secret_key or dev["secret_key"]
+        s.master_key = s.master_key or dev["master_key"]
+    if s.paypal_mode == "sandbox" and not (s.paypal_client_id and s.paypal_client_secret):
+        raise RuntimeError("AIRSIGN_PAYPAL_MODE=sandbox needs AIRSIGN_PAYPAL_CLIENT_ID and AIRSIGN_PAYPAL_CLIENT_SECRET")
+    return s
