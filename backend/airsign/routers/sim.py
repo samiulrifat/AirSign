@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..auth import customer
 from ..config import get_settings
+from ..ratelimit import rate_limit
 from ..signal import synth
 
 router = APIRouter(prefix="/api/sim")
@@ -28,7 +29,7 @@ LABELS = {
 }
 
 
-@router.get("/gesture")
+@router.get("/gesture", dependencies=[Depends(rate_limit("sim"))])
 def gesture(
     kind: Literal["genuine", "imitation", "impostor", "injection", "shake"] = "genuine",
     enroll_index: int | None = Query(default=None, ge=0, le=9),

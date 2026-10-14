@@ -71,6 +71,57 @@ cloudflared tunnel --url http://localhost:8000
 
 Then set `AIRSIGN_SECURE_COOKIES=true`. On iPhone the app asks for motion access when you tap *Allow motion sensors*.
 
+### Deploy for free (Render + Neon)
+
+The hosted demo needs HTTPS and has to stay up through judging. Both services below have free plans that don't need a card:
+
+1. **Database: [Neon](https://neon.com) free Postgres.** Create a project and copy its connection string (`postgresql://…?sslmode=require`). Render's own free Postgres expires after 30 days, and Render's free disk is wiped on every restart, so the data lives on Neon.
+2. **App: [Render](https://render.com) free web service.** In the dashboard choose *New → Blueprint* and pick this repo; [`render.yaml`](render.yaml) builds the [`Dockerfile`](Dockerfile). When asked, paste the Neon URL into `AIRSIGN_DATABASE_URL` and choose a team code for `AIRSIGN_LAB_CODE`. Render generates `AIRSIGN_SECRET_KEY` and `AIRSIGN_MASTER_KEY`. **Save a copy of the master key**: stored signatures can't be decrypted without it.
+3. **Optional keep-alive.** Free services sleep after 15 idle minutes, and waking takes about a minute. To keep the app awake for judges, add the repository variable `AIRSIGN_URL` (your `https://….onrender.com`). The [`keep-alive`](.github/workflows/keepalive.yml) workflow then pings `/api/health` every 10 minutes. That endpoint doesn't touch the database, so Neon still scales to zero.
+
+### Recording lab (for the team)
+
+`/lab` collects labeled recordings on real phones for the evaluation. It is off unless `AIRSIGN_LAB_CODE` is set, and protected by that code.
+
+- **Protocol per person:** 7 enrollment takes in one sitting; 15 genuine takes over two sessions on different days, standing and sitting; and 10 imitations of someone else after watching them sign.
+- **After every take:** whether it's usable, the phone's real sampling rate, timestamp jitter and sensor noise floor, any sensor-check flags, and (once the person has enrolled) the distance score with the tier 1 and tier 2 decisions. A bad take can be deleted.
+- **Results:** FAR/FRR per tier with 95% intervals, EER against imitations and against other people, replay detection, and sensor-check false positives per platform.
+- **Export:** the data downloads as pseudonymous JSON (P1, P2, …). Offline:
+
+  ```bash
+  .venv/bin/python backend/scripts/evaluate.py airsign-lab.json   # or --synthetic 5
+  ```
+
+Participants consent before recording. Deleting a participant removes all their recordings. Lab data is kept apart from the payment system and is never used to authorize a payment.
+
+### Tune it with real recordings
+
+After the team has recorded in the lab, export the data and run:
+
+```bash
+# 1. pick the scoring method, sigma floor and tier thresholds; prints leave-one-person-out rates
+.venv/bin/python backend/scripts/calibrate.py airsign-lab.json            # dry run
+.venv/bin/python backend/scripts/calibrate.py airsign-lab.json --write    # writes backend/models/thresholds.json
+
+# 2. optional: train the Siamese model (CPU is fine; about 4 minutes for 400 synthetic people)
+.venv/bin/pip install -r ml/requirements.txt --index-url https://download.pytorch.org/whl/cpu
+.venv/bin/python ml/train_siamese.py --lab airsign-lab.json --synthetic 400 --install
+.venv/bin/python backend/scripts/calibrate.py airsign-lab.json --write    # recalibrate with the model
+```
+
+Commit `backend/models/` and redeploy. The thresholds apply at once. Neural scoring applies to signatures enrolled after the model is installed; older templates keep using DTW.
+
+How the calibration chooses: it compares DTW, neural, fused and "both must pass", and keeps the lowest equal error rate against observed imitations. Tier 1 then accepts 97% of genuine attempts unless that would let more than 10% of imitations through; tiers 2 and 3 aim for 90%, with a 2% cap. Rates are reported **leave-one-person-out**: each person is judged with thresholds chosen on everyone else.
+
+On synthetic people only (8 people, leave-one-person-out), the tier 1 results were:
+
+| Method | Genuine accepted | Imitations accepted |
+|---|---|---|
+| DTW | 95.8% | 7.5% |
+| Siamese CNN | 94.2% | 0% |
+
+These numbers demonstrate the pipeline, not real-world accuracy. Real numbers come from the lab.
+
 ### Use the PayPal sandbox
 
 1. In the [PayPal Developer Dashboard](https://developer.paypal.com/dashboard/), create a sandbox REST app and note the client ID and secret.
@@ -133,6 +184,8 @@ We found these while building, and the code comments explain each one:
 - **Open-bill feature in shop ranking.** Without it, a first-time visitor in a multi-floor building always ties, and the popup could never suggest a shop.
 - **Separate replay bounds** for DTW distances and fingerprint distances, instead of one bound for two different scales.
 - **The receipt comes from the capture response**, and the webhook reconciles it. Sandbox webhooks can lag by seconds.
+- **Thresholds live in a config file** (`backend/models/thresholds.json`) and are applied when scoring, not baked into templates, so they can be retuned without anyone enrolling again. With only 5–10 enrollment repetitions the personal σ is unreliable, so the σ floor usually decides; calibration picks it from data.
+- **Rate limits** per IP and per user on sign-up, enrollment, payments, sign-off, check-in codes, the cashier PIN and the lab code (in memory, enough for one instance).
 - **The outlier gate** at enrollment also requires 1.5× the median, and drops at most two repetitions. With 7 samples the MAD alone drops normal repetitions.
 
 ## Project layout
@@ -144,8 +197,14 @@ backend/airsign/
   routers/     API: customer, shops, payments, POS, simulation
   intents.py   payment state machine and the single capture path
   risk.py      risk engine      shops.py  shop ranking      security.py  crypto
-backend/tests/ end-to-end API tests
-frontend/src/  React app: customer pages, cashier POS, sign pad, PayPal v6 loader
+  evaluation.py  FAR/FRR/EER, replay and sensor-check rates with 95% intervals
+backend/scripts/evaluate.py  offline evaluation of a lab export or synthetic people
+backend/scripts/calibrate.py thresholds and method from labeled data (leave-one-person-out)
+backend/models/              thresholds.json and siamese.npz once calibrated or trained
+ml/train_siamese.py          PyTorch training of the Siamese CNN, exported for NumPy inference
+backend/tests/ end-to-end API tests (SQLite by default; AIRSIGN_TEST_DATABASE_URL for Postgres)
+frontend/src/  React app: customer pages, cashier POS, recording lab, sign pad, PayPal v6 loader
+Dockerfile, render.yaml, .github/workflows/  free deployment, keep-alive, CI
 ```
 
 ## Tools used
@@ -157,12 +216,14 @@ frontend/src/  React app: customer pages, cashier POS, sign pad, PayPal v6 loade
 | **PayPal JavaScript SDK v6** | Buyer approval (`createPayPalOneTimePaymentSession`) for the server-created order |
 | **PayPal Webhooks** | `PAYMENT.CAPTURE.COMPLETED` / `DENIED`, verified with `verify-webhook-signature` |
 | **PayPal sandbox** | All payments, with sandbox business and buyer accounts |
-| FastAPI, SQLAlchemy, SQLite | API, state machine, storage |
+| FastAPI, SQLAlchemy, SQLite / Postgres (Neon) | API, state machine, storage |
 | NumPy, SciPy | Signal processing (resampling, Butterworth filtering), DTW, NumPy CNN inference |
 | scikit-learn | Isolation forest for the learned risk score |
+| PyTorch | Offline training of the Siamese CNN (triplet loss, semi-hard mining); the server runs it in NumPy |
 | cryptography | AES-256-GCM envelope encryption of templates |
 | React, Vite, TypeScript | Mobile web app and cashier screen; DeviceMotion and Geolocation APIs |
 | qrcode | Rotating check-in QR on the cashier screen |
+| Render, Neon | Free hosting for the demo (Render is a hackathon sponsor) and its Postgres database |
 | Playwright | Headless browser runs of the full flow during development |
 | Claude Code | AI pair programmer used to build and test the project |
 

@@ -15,6 +15,7 @@ from ..auth import customer
 from ..config import get_settings
 from ..db import get_db
 from ..intents import local_now
+from ..ratelimit import rate_limit
 from ..models import Building, CheckinToken, Invoice, Merchant, PaymentHistory, now
 from ..security import read_checkin_token, sign_value, unsign_value, verify_checkin_signature
 from ..seed import move_building
@@ -141,7 +142,7 @@ class CheckinIn(BaseModel):
     code: str | None = None
 
 
-@router.post("/checkin")
+@router.post("/checkin", dependencies=[Depends(rate_limit("checkin"))])
 def checkin(body: CheckinIn, session=Depends(customer), db: Session = Depends(get_db)):
     """Verify a scanned shop QR token or its six-digit fallback code. Single use."""
     user, _ = session

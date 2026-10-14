@@ -1,0 +1,15 @@
+# Keeps the free Render service awake so judges do not wait for a cold start.
+# Set the repository variable AIRSIGN_URL (Settings > Secrets and variables >
+# Actions > Variables), e.g. https://airsign.onrender.com. Without it this does nothing.
+# /api/health does not touch the database, so Neon can still scale to zero.
+name: keep-alive
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    if: ${{ vars.AIRSIGN_URL != '' }}
+    steps:
+      - run: curl -fsS --retry 3 --max-time 90 "${{ vars.AIRSIGN_URL }}/api/health"

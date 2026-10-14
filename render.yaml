@@ -1,0 +1,31 @@
+# Render Blueprint: New > Blueprint in the Render dashboard, pick this repo.
+# Free plan: sleeps after 15 idle minutes and has no persistent disk, so the
+# database lives on Neon's free Postgres (see README, "Deploy for free").
+services:
+  - type: web
+    name: airsign
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: AIRSIGN_DATABASE_URL
+        sync: false # paste the Neon connection string
+      - key: AIRSIGN_SECRET_KEY
+        generateValue: true
+      - key: AIRSIGN_MASTER_KEY
+        generateValue: true # keep a copy: templates cannot be decrypted without it
+      - key: AIRSIGN_LAB_CODE
+        sync: false # team-only code for /lab
+      - key: AIRSIGN_SECURE_COOKIES
+        value: "true"
+      - key: AIRSIGN_ALLOW_SIMULATION
+        value: "true"
+      - key: AIRSIGN_PAYPAL_MODE
+        value: mock # switch to sandbox once the credentials below are set
+      - key: AIRSIGN_PAYPAL_CLIENT_ID
+        sync: false
+      - key: AIRSIGN_PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: AIRSIGN_PAYPAL_WEBHOOK_ID
+        sync: false

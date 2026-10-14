@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import REPO_ROOT, get_settings
 from .db import SessionLocal, init_db
-from .routers import customer, payments, pos, shops, sim
+from .routers import customer, lab, payments, pos, shops, sim
 from .seed import seed_shops
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -29,14 +29,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AirSign", version="0.1.0", lifespan=lifespan)
-for r in (customer.router, shops.router, payments.router, pos.router, sim.router):
+for r in (customer.router, shops.router, payments.router, pos.router, sim.router, lab.router):
     app.include_router(r)
 
 
 @app.exception_handler(HTTPException)
 async def http_error(request: Request, exc: HTTPException):
     detail = exc.detail if isinstance(exc.detail, dict) else {"code": "error", "message": str(exc.detail)}
-    return JSONResponse(detail, status_code=exc.status_code)
+    return JSONResponse(detail, status_code=exc.status_code, headers=getattr(exc, "headers", None))
 
 
 @app.exception_handler(RequestValidationError)

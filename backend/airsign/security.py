@@ -11,7 +11,7 @@ import secrets
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from .config import get_settings
+from .config import get_settings, master_key_bytes
 
 
 def b64u(data: bytes) -> str:
@@ -65,10 +65,7 @@ def hash_nonce(nonce: str, intent_id: str) -> str:
 
 
 def _master() -> AESGCM:
-    key = base64.b64decode(get_settings().master_key)
-    if len(key) != 32:
-        raise RuntimeError("AIRSIGN_MASTER_KEY must be base64 of 32 bytes")
-    return AESGCM(key)
+    return AESGCM(master_key_bytes(get_settings().master_key))
 
 
 def seal(plaintext: bytes, aad: str) -> tuple[bytes, bytes]:

@@ -14,6 +14,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..models import Device, EnrollmentSession, PaymentHistory, SignatureTemplate, User, now
 from ..paypal.gateway import get_gateway
+from ..ratelimit import rate_limit
 from ..seed import seed_history
 from ..signal import enroll as enrollment
 from ..signal import pipeline
@@ -47,7 +48,7 @@ class SessionIn(BaseModel):
     demo_history: bool = True
 
 
-@router.post("/session")
+@router.post("/session", dependencies=[Depends(rate_limit("session"))])
 def create_session(body: SessionIn, response: Response, db: Session = Depends(get_db)):
     if not body.consent:
         fail("consent_required", "AirSign needs your consent to store an encrypted motion signature.")
@@ -150,7 +151,7 @@ class EnrollStartIn(BaseModel):
     simulated: bool = False
 
 
-@router.post("/enroll/start")
+@router.post("/enroll/start", dependencies=[Depends(rate_limit("enroll"))])
 def enroll_start(body: EnrollStartIn, session=Depends(customer), db: Session = Depends(get_db)):
     user, _ = session
     if body.simulated and not get_settings().allow_simulation:
@@ -166,7 +167,7 @@ def enroll_start(body: EnrollStartIn, session=Depends(customer), db: Session = D
     return {"accepted": 0, "target": TARGET_REPS, "minimum": enrollment.MIN_REPS}
 
 
-@router.post("/enroll/sample")
+@router.post("/enroll/sample", dependencies=[Depends(rate_limit("enroll"))])
 def enroll_sample(body: SampleIn, session=Depends(customer), db: Session = Depends(get_db)):
     user, _ = session
     es, samples = biometrics.load_enrollment(db, user.id)

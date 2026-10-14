@@ -228,3 +228,34 @@ class PaymentHistory(Base):
     amount_cents: Mapped[int] = mapped_column(Integer)
     at: Mapped[datetime] = mapped_column(UTCDateTime())
     synthetic: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class LabParticipant(Base):
+    """A consenting participant in the evaluation study. Pseudonymous: P1, P2, ..."""
+
+    __tablename__ = "lab_participants"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    alias: Mapped[str] = mapped_column(String(40))
+    consent_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
+
+
+class LabRecording(Base):
+    """Raw recordings kept, with consent, only for evaluating and training the verifier.
+
+    Separate from the payment system: nothing here is used to authorise a payment.
+    """
+
+    __tablename__ = "lab_recordings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    participant_id: Mapped[str] = mapped_column(ForeignKey("lab_participants.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(12))  # enroll, genuine, imitation
+    target_id: Mapped[str | None] = mapped_column(String, nullable=True)  # imitated participant
+    session: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    posture: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    device_label: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    platform: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    nominal_hz: Mapped[float | None] = mapped_column(Float, nullable=True)
+    accel_includes_gravity: Mapped[bool] = mapped_column(Boolean, default=False)
+    samples: Mapped[list] = mapped_column(JSON)
+    diagnostics: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)

@@ -26,9 +26,6 @@ M_NEAREST = 3
 MIN_DIRECTION_CHANGES = 6
 MIN_PEAK_ROTATION = 1.5  # rad/s, about 86 deg/s
 MAX_DURATION_CV = 0.25
-# sigma comes from only 5 to 10 leave-one-out scores, so it is often underestimated.
-# The floor is a starting point from synthetic data, to be tuned on real recordings.
-SIGMA_FLOOR_FRACTION = 0.5
 REPLAY_FRACTION = 0.25
 
 
@@ -62,13 +59,13 @@ class Template:
     X: list[np.ndarray]  # preprocessed repetitions, each 6 x N_i
     fps: np.ndarray  # (n_submitted, 192) float16 fingerprints of all submitted repetitions
     mu_dtw: float
-    sigma_dtw: float
+    sd_dtw: float  # raw; the floor from calibration is applied when scoring
     replay_eps_dtw: float
     replay_eps_fp: float
     emb: np.ndarray | None = None  # (n, 128)
     proto: np.ndarray | None = None  # (128,)
     mu_nn: float | None = None
-    sigma_nn: float | None = None
+    sd_nn: float | None = None
     model_version: str | None = None
 
     @property
@@ -78,11 +75,11 @@ class Template:
     def to_bytes(self) -> bytes:
         arrays = {f"X{i}": x.astype(np.float32) for i, x in enumerate(self.X)}
         arrays["fps"] = self.fps
-        arrays["scalars"] = np.array([self.mu_dtw, self.sigma_dtw, self.replay_eps_dtw, self.replay_eps_fp])
+        arrays["scalars"] = np.array([self.mu_dtw, self.sd_dtw, self.replay_eps_dtw, self.replay_eps_fp])
         if self.emb is not None:
             arrays["emb"] = self.emb.astype(np.float32)
             arrays["proto"] = self.proto.astype(np.float32)
-            arrays["nn"] = np.array([self.mu_nn, self.sigma_nn])
+            arrays["nn"] = np.array([self.mu_nn, self.sd_nn])
             arrays["model_version"] = np.array(self.model_version or "")
         buf = io.BytesIO()
         np.savez_compressed(buf, **arrays)
@@ -93,12 +90,12 @@ class Template:
         with np.load(io.BytesIO(data)) as z:
             n = len([k for k in z.files if k.startswith("X")])
             X = [z[f"X{i}"].astype(np.float64) for i in range(n)]
-            mu, sigma, eps_dtw, eps_fp = z["scalars"].tolist()
-            t = cls(X=X, fps=z["fps"], mu_dtw=mu, sigma_dtw=sigma, replay_eps_dtw=eps_dtw, replay_eps_fp=eps_fp)
+            mu, sd, eps_dtw, eps_fp = z["scalars"].tolist()
+            t = cls(X=X, fps=z["fps"], mu_dtw=mu, sd_dtw=sd, replay_eps_dtw=eps_dtw, replay_eps_fp=eps_fp)
             if "emb" in z.files:
                 t.emb = z["emb"].astype(np.float64)
                 t.proto = z["proto"].astype(np.float64)
-                t.mu_nn, t.sigma_nn = z["nn"].tolist()
+                t.mu_nn, t.sd_nn = z["nn"].tolist()
                 t.model_version = str(z["model_version"])
         return t
 
@@ -124,10 +121,10 @@ def _robust_outliers(values: np.ndarray) -> np.ndarray:
     return mask
 
 
-def _mu_sigma(scores: list[float]) -> tuple[float, float]:
+def _mu_sd(scores: list[float]) -> tuple[float, float]:
     mu = float(np.mean(scores))
-    sigma = float(np.std(scores, ddof=1)) if len(scores) > 1 else 0.0
-    return mu, max(sigma, SIGMA_FLOOR_FRACTION * mu, 1e-6)
+    sd = float(np.std(scores, ddof=1)) if len(scores) > 1 else 0.0
+    return mu, sd
 
 
 def build_template(samples: list[Processed], model: SiameseModel | None = None) -> tuple[Template, dict]:
@@ -160,7 +157,7 @@ def build_template(samples: list[Processed], model: SiameseModel | None = None) 
     Dk = D[np.ix_(keep, keep)]
     k = len(keep)
     loo = [nearest_mean([Dk[i, j] for j in range(k) if j != i]) for i in range(k)]
-    mu, sigma = _mu_sigma(loo)
+    mu, sd = _mu_sd(loo)
     pair_min = float(min(Dk[i, j] for i in range(k) for j in range(i + 1, k)))
 
     # Fingerprints of every submitted repetition, including dropped ones, so that
@@ -173,7 +170,7 @@ def build_template(samples: list[Processed], model: SiameseModel | None = None) 
         X=[samples[i].X for i in keep],
         fps=fps,
         mu_dtw=mu,
-        sigma_dtw=sigma,
+        sd_dtw=sd,
         replay_eps_dtw=REPLAY_FRACTION * pair_min,
         replay_eps_fp=REPLAY_FRACTION * fp_pair_min,
     )
@@ -187,8 +184,8 @@ def build_template(samples: list[Processed], model: SiameseModel | None = None) 
         proto = emb.mean(axis=0)
         t.emb = emb
         t.proto = proto / np.linalg.norm(proto)
-        t.mu_nn, t.sigma_nn = _mu_sigma(loo_nn)
+        t.mu_nn, t.sd_nn = _mu_sd(loo_nn)
         t.model_version = model.version
 
-    report.update({"kept": k, "mu_dtw": mu, "sigma_dtw": sigma})
+    report.update({"kept": k, "mu_dtw": mu, "sd_dtw": sd})
     return t, report

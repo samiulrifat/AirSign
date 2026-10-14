@@ -17,6 +17,7 @@ from ..auth import POS_COOKIE, cashier, start_pos_session
 from ..config import get_settings
 from ..db import get_db
 from ..intents import TERMINAL
+from ..ratelimit import rate_limit
 from ..models import CheckinToken, Invoice, Merchant, PaymentIntent, now
 from ..security import check_pin, make_checkin_token
 from .shops import invoice_view, shop_view
@@ -41,7 +42,7 @@ class LoginIn(BaseModel):
     pin: str = Field(min_length=4, max_length=12)
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(rate_limit("pos_login"))])
 def login(body: LoginIn, response: Response, db: Session = Depends(get_db)):
     m = db.get(Merchant, body.merchant_id)
     if m is None or not check_pin(body.pin, m.pin_hash):
@@ -141,7 +142,7 @@ def cancel_invoice(invoice_id: str, merchant: Merchant = Depends(cashier), db: S
     )
     if busy:
         fail("in_progress", "A payment for this invoice is being completed.", 409)
-    for intent in db.scalars(select(PaymentIntent).where(PaymentIntent.invoice_id == inv.id, PaymentIntent.state.not_in(TERMINAL))):
+    for intent in db.scalars(select(PaymentIntent).where(PaymentIntent.invoice_id == inv.id, PaymentIntent.state.not_in(tuple(TERMINAL)))):
         audit(db, merchant.id, "intent.transition", intent.id, frm=intent.state, to="CANCELLED", reason="invoice_cancelled")
         intent.state = "CANCELLED"
     inv.status = "CANCELLED"

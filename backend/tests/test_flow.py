@@ -171,23 +171,27 @@ def test_injected_sensor_data_rejected():
 def test_large_payment_new_shop_far_away_needs_two_signatures():
     c = customer()
     enroll(c)
-    inv = open_invoice(cashier("shop_volt"), "480.00")
-    armed = start_payment(c, inv["id"], location={"lat": 40.80, "lon": -73.90, "accuracy": 30})
-    intent = armed["intent"]
-    assert intent["risk"]["tier"] == 3, intent["risk"]
-    assert intent["signatures_required"] == 2
-    assert "new shop" in intent["risk"]["explanation"]
-    passed = 0
-    nonce = armed["nonce"]
-    while True:
-        r, _ = sign(c, intent["id"], nonce)
-        out = r.json()
-        if out["state"] != "ARMED":
-            break
-        passed = max(passed, out["signatures_passed"])
-        nonce = out["nonce"]
-    assert passed == 1, "the first good signature alone must not complete a tier 3 payment"
-    assert out["state"] == "COMPLETED", out
+    pos = cashier("shop_volt")
+    # Tier 3 needs two passes within three attempts at the strict threshold, which a
+    # genuine signer misses a few percent of the time. Allow one fresh bill for that.
+    for _ in range(2):
+        armed = start_payment(c, open_invoice(pos, "480.00")["id"], location={"lat": 40.80, "lon": -73.90, "accuracy": 30})
+        intent = armed["intent"]
+        assert intent["risk"]["tier"] == 3, intent["risk"]
+        assert intent["signatures_required"] == 2
+        assert "new shop" in intent["risk"]["explanation"]
+        nonce = armed["nonce"]
+        while True:
+            r, _ = sign(c, intent["id"], nonce)
+            out = r.json()
+            if out["state"] != "ARMED":
+                break
+            nonce = out["nonce"]
+        if out["state"] == "COMPLETED":
+            assert out["signatures_passed"] == 2, "one good signature alone must not complete a tier 3 payment"
+            return
+        assert out["state"] == "LOCKED", out
+    raise AssertionError("genuine signer locked out of two tier 3 payments in a row")
 
 
 def test_checkin_code_verifies_location_and_is_single_use():

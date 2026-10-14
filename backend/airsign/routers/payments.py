@@ -15,6 +15,7 @@ from ..auth import customer
 from ..db import SessionLocal, get_db
 from ..models import Invoice, Merchant, PaymentIntent, SignoffAttempt
 from ..paypal.gateway import MockGateway, PayPalError, get_gateway
+from ..ratelimit import rate_limit
 from ..signal import pipeline
 from .customer import DeviceInfo
 from .shops import checkin_pass_valid, invoice_view, shop_view
@@ -91,7 +92,7 @@ class IntentIn(BaseModel):
     checkin_pass: str | None = None
 
 
-@router.post("/intents")
+@router.post("/intents", dependencies=[Depends(rate_limit("intent"))])
 def create_intent(body: IntentIn, session=Depends(customer), db: Session = Depends(get_db)):
     user, device = session
     invoice = db.get(Invoice, body.invoice_id)
@@ -164,7 +165,7 @@ def _deliver_mock_webhook(intent_id: str) -> None:
             svc.handle_webhook_event(db, svc.mock_capture_event(intent), verified=True, source="mock-paypal")
 
 
-@router.post("/intents/{intent_id}/signoff")
+@router.post("/intents/{intent_id}/signoff", dependencies=[Depends(rate_limit("signoff"))])
 def signoff(intent_id: str, body: SignoffIn, background: BackgroundTasks, session=Depends(customer), db: Session = Depends(get_db)):
     """The only endpoint that can lead to a PayPal capture."""
     user, _ = session

@@ -105,7 +105,7 @@ def create_intent(
         raise IntentError("invoice_closed", "This invoice is no longer open.", 409)
 
     active = db.scalars(
-        select(PaymentIntent).where(PaymentIntent.invoice_id == invoice.id, PaymentIntent.state.not_in(TERMINAL))
+        select(PaymentIntent).where(PaymentIntent.invoice_id == invoice.id, PaymentIntent.state.not_in(tuple(TERMINAL)))
     ).all()
     for other in active:
         expire_if_needed(db, other)
@@ -350,7 +350,7 @@ def signoff(db: Session, intent_id: str, user: User, nonce: str, payload: dict) 
             to = "ARMED"
             reason = (reason + " " if reason else "") + MESSAGES["reject"].format(left=left, s="" if left == 1 else "s")
 
-    k = verify.TIER_K[tier]
+    k = verify.tier_k(tier)
     db.add(
         SignoffAttempt(
             intent_id=intent.id,

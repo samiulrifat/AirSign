@@ -4,11 +4,14 @@ import tempfile
 from pathlib import Path
 
 _tmp = Path(tempfile.mkdtemp(prefix="airsign-test-"))
-os.environ["AIRSIGN_DATABASE_URL"] = f"sqlite:///{_tmp / 'test.db'}"
+# AIRSIGN_TEST_DATABASE_URL runs the suite against another database, e.g. Postgres.
+os.environ["AIRSIGN_DATABASE_URL"] = os.environ.get("AIRSIGN_TEST_DATABASE_URL", f"sqlite:///{_tmp / 'test.db'}")
 os.environ["AIRSIGN_SECRET_KEY"] = "test-secret"
 os.environ["AIRSIGN_MASTER_KEY"] = base64.b64encode(b"k" * 32).decode()
 os.environ["AIRSIGN_PAYPAL_MODE"] = "mock"
 os.environ["AIRSIGN_ALLOW_SIMULATION"] = "true"
+os.environ["AIRSIGN_LAB_CODE"] = "test-lab"
+os.environ["AIRSIGN_RATE_LIMITS"] = "false"  # test_ratelimit.py turns them on
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
