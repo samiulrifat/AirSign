@@ -457,6 +457,7 @@ export default function Lab() {
                   <th>Enroll</th>
                   <th>Genuine</th>
                   <th>Imitation</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -468,6 +469,19 @@ export default function Lab() {
                     <td>{p.counts.enroll}/7</td>
                     <td>{p.counts.genuine}/15</td>
                     <td>{p.counts.imitation}/10</td>
+                    <td>
+                      <button
+                        className="btn danger small"
+                        onClick={async () => {
+                          if (!confirm(`Withdraw ${p.id} (${p.alias}) and delete all their recordings? This cannot be undone.`)) return
+                          await del(`/lab/participants/${p.id}`)
+                          if (pid === p.id) setPid('')
+                          loadPeople()
+                        }}
+                      >
+                        Withdraw
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

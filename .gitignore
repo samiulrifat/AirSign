@@ -22,3 +22,8 @@ data/
 
 # Model training output (install with --install)
 ml/out/
+
+# Lab exports contain raw motion recordings: never commit them
+airsign-lab*.json
+*.results.json
+evaluation-synthetic.json
