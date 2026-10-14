@@ -7,7 +7,7 @@ import time
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -59,8 +59,12 @@ def logout(response: Response):
 
 
 @router.get("/me")
-def me(merchant: Merchant = Depends(cashier)):
-    return shop_view(merchant)
+def me(request: Request, db: Session = Depends(get_db)):
+    """The logged-in shop, or null. Not a 401, so the login screen loads quietly."""
+    try:
+        return shop_view(cashier(request, db))
+    except HTTPException:
+        return None
 
 
 class Item(BaseModel):
