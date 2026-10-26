@@ -336,7 +336,8 @@ function Approve({ intent, onApproved, onCancel }: { intent: Intent; onApproved:
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [session, setSession] = useState<ApprovalSession | null>(null)
-  const [sdkState, setSdkState] = useState<'loading' | 'ready' | 'unavailable'>('loading')
+  const [sdkState, setSdkState] = useState<'loading' | 'ready' | 'ineligible' | 'unavailable'>('loading')
+  const paypalButton = useRef<HTMLElement | null>(null)
 
   const confirm = useCallback(async () => {
     setBusy(true)
@@ -353,21 +354,46 @@ function Approve({ intent, onApproved, onCancel }: { intent: Intent; onApproved:
   useEffect(() => {
     if (config?.paypal_mode !== 'sandbox' || !config.paypal_client_id) return
     let alive = true
-    prepareApproval(config.paypal_client_id, {
-      onApprove: () => confirm(),
-      onCancel: () => setError('You closed PayPal before approving.'),
-      onError: () => setError('PayPal reported an error. Please try again.'),
-    })
+    prepareApproval(
+      config.paypal_client_id,
+      { currencyCode: intent.currency, amount: (intent.amount_cents / 100).toFixed(2) },
+      {
+        onApprove: () => confirm(),
+        onCancel: () => setError('You closed PayPal before approving.'),
+        onError: (e) => {
+          const code = (e as { code?: string })?.code
+          setError(
+            code === 'ERR_DEV_UNABLE_TO_OPEN_POPUP'
+              ? 'Your browser blocked the PayPal window. Allow pop-ups for this site and try again.'
+              : `PayPal reported an error${code ? ` (${code})` : ''}. Please try again.`,
+          )
+        },
+      },
+    )
       .then((s) => {
         if (!alive) return
         setSession(s)
-        setSdkState('ready')
+        setSdkState(s.eligible ? 'ready' : 'ineligible')
       })
       .catch(() => alive && setSdkState('unavailable'))
     return () => {
       alive = false
     }
-  }, [config, confirm])
+  }, [config, confirm, intent.currency, intent.amount_cents])
+
+  // <paypal-button> is a web component, so the click is wired directly; start()
+  // must run inside the click for the browser to allow the PayPal window.
+  const orderId = intent.paypal.order_id
+  useEffect(() => {
+    const el = paypalButton.current
+    if (!el || !session?.eligible || !orderId) return
+    const onClick = () => {
+      setError(null)
+      session.open(orderId).catch(() => setError('Could not open PayPal. Please try again.'))
+    }
+    el.addEventListener('click', onClick)
+    return () => el.removeEventListener('click', onClick)
+  }, [session, orderId, busy])
 
   async function mockApprove() {
     setBusy(true)
@@ -390,11 +416,17 @@ function Approve({ intent, onApproved, onCancel }: { intent: Intent; onApproved:
       {error && <div className="notice warn">{error}</div>}
       {config?.paypal_mode === 'sandbox' ? (
         sdkState === 'ready' && session ? (
-          <button className="btn block" disabled={busy} onClick={() => session.open(intent.paypal.order_id!)}>
-            {busy ? <Spinner /> : 'Pay with PayPal'}
-          </button>
+          busy ? (
+            <div className="row">
+              <Spinner /> Confirming your approval with PayPal…
+            </div>
+          ) : (
+            <paypal-button ref={paypalButton} type="pay" className="paypal-gold"></paypal-button>
+          )
         ) : sdkState === 'loading' ? (
           <Spinner />
+        ) : sdkState === 'ineligible' ? (
+          <div className="notice bad">PayPal is not available for this payment in your region or browser.</div>
         ) : (
           <div className="notice bad">The PayPal SDK could not load.</div>
         )

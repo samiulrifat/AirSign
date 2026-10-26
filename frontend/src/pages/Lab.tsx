@@ -26,6 +26,7 @@ type Diagnostics = {
   rate_hz?: number
   jitter_ms?: number
   noise_log10?: number[]
+  quiet_noise_log10?: number
   lead_in_still?: boolean
   sensor_flags?: string[]
   enroll_quality?: string
@@ -175,7 +176,7 @@ function DiagnosticsCard({ d, onUndo }: { d: Diagnostics; onUndo: () => void }) 
     <div className={`notice ${flags.length >= 2 ? 'bad' : 'ok'}`}>
       <strong>Saved.</strong> {d.duration_s}s gesture, {d.direction_changes} direction changes, peak {d.peak_rotation} rad/s.
       <div className="tiny" style={{ marginTop: 6, color: 'inherit' }}>
-        Sensor: {d.rate_hz} Hz, jitter {d.jitter_ms} ms, noise log10 [{d.noise_log10?.join(', ')}]
+        Sensor: {d.rate_hz} Hz, jitter {d.jitter_ms} ms, noise log10 [{d.noise_log10?.join(', ')}], at rest {d.quiet_noise_log10}
         {d.lead_in_still === false && ' · no still lead-in'}
         {flags.length > 0 && ` · flags: ${flags.join(', ')}`}
         {d.enroll_quality && d.enroll_quality !== 'ok' && ` · enrollment check: ${d.enroll_quality}`}

@@ -401,8 +401,15 @@ def _capture(db: Session, intent: PaymentIntent) -> None:
     try:
         result = get_gateway().capture_order(intent.paypal_order_id, intent.capture_request_id)
     except PayPalError as e:
-        intent.failure_reason = "PayPal could not complete the payment."
-        transition(db, intent, "FAILED", "paypal", error=str(e))
+        if e.issue == "INSTRUMENT_DECLINED":
+            # Do not retry the same funding source: the buyer has to pick another one.
+            intent.failure_reason = (
+                "PayPal declined the payment method. Ask the cashier for a new bill and choose "
+                "a different payment method when PayPal opens."
+            )
+        else:
+            intent.failure_reason = "PayPal could not complete the payment."
+        transition(db, intent, "FAILED", "paypal", error=str(e), issue=e.issue, debug_id=e.debug_id)
         db.commit()
         return
     intent.capture_id = result.capture_id

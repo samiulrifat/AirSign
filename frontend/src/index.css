@@ -585,3 +585,10 @@ details summary {
   color: var(--ink-2);
   font-size: 0.9rem;
 }
+
+/* PayPal's own button (JS SDK v6 web component) */
+paypal-button {
+  display: block;
+  width: 100%;
+  --paypal-button-border-radius: 12px;
+}

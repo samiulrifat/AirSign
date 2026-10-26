@@ -11,7 +11,7 @@ type OneTimeSession = {
 }
 
 type SdkInstance = {
-  findEligibleMethods: (opts: { currencyCode: string }) => Promise<{ isEligible: (m: string) => boolean }>
+  findEligibleMethods: (opts: { currencyCode: string; amount?: string }) => Promise<{ isEligible: (m: string) => boolean }>
   createPayPalOneTimePaymentSession: (callbacks: {
     onApprove: (data: { orderId: string }) => Promise<void> | void
     onCancel?: () => void
@@ -60,28 +60,28 @@ export function paypalInstance(clientId: string): Promise<SdkInstance> {
   return p
 }
 
-export async function paypalEligible(clientId: string, currencyCode: string): Promise<boolean> {
-  const sdk = await paypalInstance(clientId)
-  const methods = await sdk.findEligibleMethods({ currencyCode })
-  return methods.isEligible('paypal')
-}
-
-export type ApprovalSession = { open: (orderId: string) => Promise<void> }
+export type ApprovalSession = { eligible: boolean; open: (orderId: string) => Promise<void> }
 
 /**
  * Prepare the approval session before the buyer taps, then call open() straight
  * from the click handler. Nothing may be awaited between the click and start():
  * browsers only allow the PayPal window during the click's transient activation.
+ *
+ * Eligibility is checked first with the order's currency and amount, as PayPal's
+ * v6 guidance requires, so the PayPal button is only shown when PayPal can be used.
  */
 export async function prepareApproval(
   clientId: string,
+  order: { currencyCode: string; amount: string },
   handlers: { onApprove: () => Promise<void> | void; onCancel: () => void; onError: (e: unknown) => void },
 ): Promise<ApprovalSession> {
   const sdk = await paypalInstance(clientId)
+  const methods = await sdk.findEligibleMethods(order)
+  if (!methods.isEligible('paypal')) return { eligible: false, open: async () => {} }
   const session = sdk.createPayPalOneTimePaymentSession({
     onApprove: () => handlers.onApprove(),
     onCancel: handlers.onCancel,
     onError: handlers.onError,
   })
-  return { open: (orderId) => session.start({ presentationMode: 'auto' }, Promise.resolve({ orderId })) }
+  return { eligible: true, open: (orderId) => session.start({ presentationMode: 'auto' }, Promise.resolve({ orderId })) }
 }

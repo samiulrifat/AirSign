@@ -170,7 +170,7 @@ Customer phone ◀──API──▶ │ intent state machine · PayPal client �
 - Templates are encrypted with **AES-256-GCM** under a per-user data key, wrapped by a master key from the environment. Raw sensor streams are discarded after processing and never logged.
 - Single-use, hashed nonce bound to the intent; it is consumed atomically. A payment intent allows 3 attempts, and a replay flag or the third failure locks the **intent, not the account**.
 - Shop check-in QR tokens are HMAC-SHA256 signed, expire after 60 s and are single use; a 6-digit code is the fallback.
-- PayPal webhooks are verified through PayPal's verification endpoint and checked against order id and amount.
+- PayPal webhooks are verified through PayPal's verification endpoint, using the raw request body exactly as received (re-serialized JSON would fail the signature check), and checked against order id and amount. Events are deduplicated by id.
 - *Delete my signature* and *Delete all my data* are in the app. Location is read only when you tap, and only the matched shop is kept.
 
 **Honest limits.** A motion signature is a behavioral biometric: one factor, not a replacement for Face ID or passkeys. A close observer might copy a simple gesture (enrollment rejects trivial ones), signing while walking is harder, and phones differ. Malware that injects realistic sensor data is out of scope. Verification runs on the server so it can gate the capture; the production path is on-device matching with device-bound keys. The demo returns match scores to show the model working; a production system would not. This prototype makes no regulatory compliance claims.
@@ -216,6 +216,7 @@ Dockerfile, render.yaml, .github/workflows/  free deployment, keep-alive, CI
 | **PayPal Python Server SDK** (`paypal-server-sdk`) | Server-side Orders calls in sandbox mode |
 | **PayPal JavaScript SDK v6** | Buyer approval (`createPayPalOneTimePaymentSession`) for the server-created order |
 | **PayPal Webhooks** | `PAYMENT.CAPTURE.COMPLETED` / `DENIED`, verified with `verify-webhook-signature` |
+| **PayPal AI Toolkit** ([github.com/paypal/AI-Toolkit](https://github.com/paypal/AI-Toolkit)) | Audited the integration with its `paypal-best-practices` skill and *PayPal Doctor* checklist. Fixes that came out of it: webhook signatures verified against the raw request body, `PayPal-Request-Id` on every POST, retries with backoff for 429/5xx, `debug_id` logging, `INSTRUMENT_DECLINED` handled separately, `findEligibleMethods()` before showing PayPal's own `<paypal-button>` web component |
 | **PayPal sandbox** | All payments, with sandbox business and buyer accounts |
 | FastAPI, SQLAlchemy, SQLite / Postgres (Neon) | API, state machine, storage |
 | NumPy, SciPy | Signal processing (resampling, Butterworth filtering), DTW, NumPy CNN inference |

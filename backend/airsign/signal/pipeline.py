@@ -109,6 +109,20 @@ def _lag1_autocorr(x: np.ndarray) -> float:
     return float(np.dot(x[:-1], x[1:]) / denom)
 
 
+def _quietest_window_var(residual: np.ndarray, window_s: float = NOISE_WINDOW_S) -> np.ndarray:
+    """Per-channel variance of the residual in the window whose loudest channel is quietest."""
+    w = max(5, int(round(window_s * FS)))
+    n = residual.shape[1]
+    if n <= w:
+        return residual.var(axis=1)
+    best = None
+    for i in range(0, n - w + 1, 5):
+        v = residual[:, i : i + w].var(axis=1)
+        if best is None or v.max() < best.max():
+            best = v
+    return best
+
+
 def segment(activity: np.ndarray) -> tuple[int, int, dict]:
     """Stage 4. Find the active part with hysteresis thresholds from the noise floor.
 
@@ -244,6 +258,9 @@ def preprocess(samples, accel_includes_gravity: bool = False) -> Processed:
         # Sensor noise above the 10 Hz cut-off. Real hardware always has some;
         # mathematically generated streams have almost none.
         "hf_var": (raw - filt).var(axis=1).tolist(),
+        # The same residual in the quietest half second, per channel. Movement can
+        # leak into the whole-recording figure; a still phone shows only sensor noise.
+        "quiet_hf_var": _quietest_window_var(raw - filt).tolist(),
         "lag1": [_lag1_autocorr(raw[c, start:end]) for c in range(6)],
         "coherence": coherence,
         "lead_in_still": seg_info["lead_in_still"],

@@ -24,6 +24,9 @@ TOO_WHITE_LAG1 = 0.2
 # near 1e-6 (resampling artifacts only), synthetic phone noise near 1e-4.
 # TODO(phase 1): confirm against real recordings from every demo phone.
 MIN_NOISE_VAR = 1e-5
+# Noise in the quietest half second. On 60 synthetic people, generated streams
+# measured at most 3e-8 and genuine recordings at least 2e-4; this sits in the gap.
+MIN_QUIET_NOISE_VAR = 1e-6
 
 
 def replay_flags(t: Template, c: Processed, min_dtw: float, prior_fps: list[np.ndarray]) -> list[str]:
@@ -49,11 +52,11 @@ def sensor_flags(c: Processed, declared_hz: float | None) -> list[str]:
         if abs(c.sampling["mean_dt_ms"] - expected) / expected > RATE_MISMATCH:
             flags.append("rate_mismatch")
     hf = np.array(pl.get("hf_var", []))
-    if hf.size == 6:
-        if np.all(hf < MIN_NOISE_VAR):
-            flags.append("no_sensor_noise")
-        elif np.ptp(hf[:3]) == 0 and np.ptp(hf[3:]) == 0:
-            flags.append("identical_noise")
+    quiet = np.array(pl.get("quiet_hf_var", []))
+    if (quiet.size == 6 and quiet.max() < MIN_QUIET_NOISE_VAR) or (hf.size == 6 and np.all(hf < MIN_NOISE_VAR)):
+        flags.append("no_sensor_noise")
+    elif hf.size == 6 and np.ptp(hf[:3]) == 0 and np.ptp(hf[3:]) == 0:
+        flags.append("identical_noise")
     lag1 = np.array(pl.get("lag1", []))
     if lag1.size == 6:
         if np.all(lag1 > TOO_SMOOTH_LAG1):

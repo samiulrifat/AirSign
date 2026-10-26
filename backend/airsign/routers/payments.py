@@ -188,7 +188,7 @@ async def paypal_webhook(request: Request, db: Session = Depends(get_db)):
         fail("bad_json", "Body is not JSON.")
     gw = get_gateway()
     try:
-        verified = gw.verify_webhook(dict(request.headers), event)
+        verified = gw.verify_webhook(dict(request.headers), raw)
     except Exception:  # verification service unreachable: record, do not trust
         log.exception("webhook verification failed")
         verified = False

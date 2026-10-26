@@ -7,10 +7,17 @@ MockGateway     a local stand-in with the same behavior, used until sandbox
                 labeled page in the app, not an imitation of PayPal.
 
 Only the intent service calls `capture_order`, and only for a VERIFIED intent.
+
+Checked against PayPal's own integration guidance (the paypal-best-practices skill
+in github.com/paypal/AI-Toolkit): every POST carries a PayPal-Request-Id, 429 and
+5xx are retried with backoff (safe because of those ids), the debug_id of every
+error is logged, INSTRUMENT_DECLINED is reported separately, and webhooks are
+verified against the raw request body.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import threading
@@ -29,7 +36,21 @@ SANDBOX_API = "https://api-m.sandbox.paypal.com"
 
 
 class PayPalError(RuntimeError):
-    pass
+    def __init__(self, message: str, issue: str | None = None, debug_id: str | None = None):
+        super().__init__(message)
+        self.issue = issue  # PayPal's issue code, for example INSTRUMENT_DECLINED
+        self.debug_id = debug_id  # needed when asking PayPal support about a failure
+
+
+def _paypal_error(action: str, e: Exception) -> PayPalError:
+    """Turn an SDK exception into a PayPalError and log PayPal's debug_id."""
+    name = getattr(e, "name", None)
+    debug_id = getattr(e, "debug_id", None)
+    details = getattr(e, "details", None) or []
+    issue = getattr(details[0], "issue", None) if details else None
+    status = getattr(e, "response_code", None)
+    log.error("PayPal %s failed: status=%s name=%s issue=%s debug_id=%s", action, status, name, issue, debug_id)
+    return PayPalError(f"{action} failed: {issue or name or status}", issue=issue or name, debug_id=debug_id)
 
 
 @dataclass
@@ -65,6 +86,11 @@ class SandboxGateway:
             ),
             environment=Environment.SANDBOX,
             timeout=20,
+            # Retry 429 and 5xx with exponential backoff. POST is safe to retry
+            # because every POST below carries a PayPal-Request-Id.
+            max_retries=2,
+            backoff_factor=1,
+            retry_methods=["GET", "POST"],
         )
         self._token: tuple[str, float] | None = None
         self._lock = threading.Lock()
@@ -100,9 +126,11 @@ class SandboxGateway:
             ],
         )
         try:
-            res = self.sdk.orders.create_order({"body": body, "prefer": "return=representation"})
+            res = self.sdk.orders.create_order(
+                {"body": body, "paypal_request_id": f"airsign-order-{invoice_id}", "prefer": "return=representation"}
+            )
         except ApiException as e:
-            raise PayPalError(f"create order failed: {e}") from e
+            raise _paypal_error("create order", e) from e
         return self._order_info(res.body)
 
     def get_order(self, order_id: str) -> OrderInfo:
@@ -111,7 +139,7 @@ class SandboxGateway:
         try:
             res = self.sdk.orders.get_order({"id": order_id})
         except ApiException as e:
-            raise PayPalError(f"get order failed: {e}") from e
+            raise _paypal_error("get order", e) from e
         return self._order_info(res.body)
 
     def capture_order(self, order_id: str, request_id: str) -> CaptureResult:
@@ -122,7 +150,7 @@ class SandboxGateway:
                 {"id": order_id, "paypal_request_id": request_id, "prefer": "return=representation"}
             )
         except ApiException as e:
-            raise PayPalError(f"capture failed: {e}") from e
+            raise _paypal_error("capture", e) from e
         order = res.body
         capture = None
         for pu in order.purchase_units or []:
@@ -152,29 +180,35 @@ class SandboxGateway:
             self._token = (data["access_token"], time.time() + float(data.get("expires_in", 300)))
             return self._token[0]
 
-    def verify_webhook(self, headers: dict[str, str], event: dict) -> bool:
+    def verify_webhook(self, headers: dict[str, str], raw_body: bytes) -> bool:
         if not self.webhook_id:
             log.error("AIRSIGN_PAYPAL_WEBHOOK_ID is not set, rejecting webhook")
             return False
         h = {k.lower(): v for k, v in headers.items()}
-        payload = {
+        fields = {
             "auth_algo": h.get("paypal-auth-algo"),
             "cert_url": h.get("paypal-cert-url"),
             "transmission_id": h.get("paypal-transmission-id"),
             "transmission_sig": h.get("paypal-transmission-sig"),
             "transmission_time": h.get("paypal-transmission-time"),
             "webhook_id": self.webhook_id,
-            "webhook_event": event,
         }
-        if not all(payload.values()):
+        if not all(fields.values()):
             return False
+        # The signature covers the body exactly as PayPal sent it. Parsing and
+        # re-serializing the JSON changes the bytes and breaks verification, so
+        # the raw body is spliced into the request unchanged.
+        body = json.dumps(fields)[:-1] + ', "webhook_event": ' + raw_body.decode("utf-8") + "}"
         r = httpx.post(
             f"{SANDBOX_API}/v1/notifications/verify-webhook-signature",
-            headers={"Authorization": f"Bearer {self._access_token()}"},
-            json=payload,
+            headers={"Authorization": f"Bearer {self._access_token()}", "Content-Type": "application/json"},
+            content=body.encode("utf-8"),
             timeout=20,
         )
-        return r.status_code == 200 and r.json().get("verification_status") == "SUCCESS"
+        if r.status_code != 200:
+            log.error("webhook verification call failed: status=%s debug_id=%s", r.status_code, r.headers.get("paypal-debug-id"))
+            return False
+        return r.json().get("verification_status") == "SUCCESS"
 
 
 class MockGateway:
@@ -233,7 +267,7 @@ class MockGateway:
             db.commit()
             return CaptureResult("COMPLETED", order.capture_id, "COMPLETED")
 
-    def verify_webhook(self, headers: dict[str, str], event: dict) -> bool:
+    def verify_webhook(self, headers: dict[str, str], raw_body: bytes) -> bool:
         # Mock events are delivered in-process, never over HTTP.
         return False
 

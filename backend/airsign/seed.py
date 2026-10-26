@@ -64,16 +64,22 @@ def seed_history(db: Session, user: User, seed: str | None = None) -> int:
 
     Gives the risk engine something to compare against: a coffee or a book is
     routine, a large repair bill at a shop never visited is not.
+
+    The made-up person usually shops around the hour the account was created, so a
+    tester (or judge, in any time zone) paying right away is not flagged for an
+    unusual time of day. A few classic hours are mixed in for variety.
     """
     db.execute(delete(PaymentHistory).where(PaymentHistory.user_id == user.id, PaymentHistory.synthetic.is_(True)))
     rng = random.Random(seed or user.id)
     tz = ZoneInfo(get_settings().timezone)
     today = now().astimezone(tz).replace(minute=0, second=0, microsecond=0)
+    h = today.hour
+    usual_hours = [(h + d) % 24 for d in (-2, -1, 0, 0, 0, 1, 1, 2)] + [9, 13, 18]
     count = 0
     for day in range(42, 0, -1):
         if rng.random() < 0.45:
             continue
-        hour = rng.choice([8, 8, 9, 12, 13, 17, 18])
+        hour = rng.choice(usual_hours)
         when = (today - timedelta(days=day)).replace(hour=hour, minute=rng.randrange(60))
         if rng.random() < 0.7:
             shop, cents = "shop_kettle", rng.randrange(380, 900)

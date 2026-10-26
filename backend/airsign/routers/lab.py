@@ -185,6 +185,7 @@ def diagnose(samples, device: DeviceInfo) -> tuple[dict, object]:
         "rate_hz": round(1000 / p.sampling["mean_dt_ms"], 1),
         "jitter_ms": round(p.sampling["std_dt_ms"], 3),
         "noise_log10": [round(math.log10(max(v, 1e-12)), 2) for v in hf],
+        "quiet_noise_log10": round(math.log10(max(max(p.plausibility["quiet_hf_var"]), 1e-12)), 2),
         "lead_in_still": p.plausibility["lead_in_still"],
         "sensor_flags": replay.sensor_flags(p, device.nominal_hz),
     }
