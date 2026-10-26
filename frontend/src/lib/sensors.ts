@@ -77,16 +77,20 @@ export class MotionRecorder {
     this.recording = true
   }
 
-  stop(): Recording {
-    this.recording = false
-    const device: DeviceInfo = {
+  /** What the server needs to know about this phone's sensors. */
+  device(): DeviceInfo {
+    return {
       platform: platform(),
       nominal_hz: this.intervalMs ? Math.round(1000 / this.intervalMs) : null,
       accel_includes_gravity: this.gravity,
     }
+  }
+
+  stop(): Recording {
+    this.recording = false
     const samples = this.rows
     this.rows = []
-    return { samples, device, simulated: false }
+    return { samples, device: this.device(), simulated: false }
   }
 
   private onMotion(e: DeviceMotionEvent) {

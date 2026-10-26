@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { del, get, post, type Intent, type Me } from '../lib/api'
 import { errorText, floorLabel, money, useApp } from '../lib/app'
 import { SimBadge, Spinner, TopBar } from '../components/bits'
 
 function Welcome() {
   const { setMe } = useApp()
+  const navigate = useNavigate()
   const [name, setName] = useState('')
   const [consent, setConsent] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -17,6 +18,7 @@ function Welcome() {
     setError(null)
     try {
       setMe(await post<Me>('/session', { display_name: name, consent, demo_history: true }))
+      navigate('/enroll') // the next thing a new user needs
     } catch (err) {
       setError(errorText(err))
     } finally {
@@ -37,7 +39,7 @@ function Welcome() {
         <h2>Get started</h2>
         <label className="field">
           <span>Your first name</span>
-          <input type="text" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required autoComplete="given-name" />
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required autoComplete="given-name" autoFocus />
         </label>
         <label className="check">
           <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />

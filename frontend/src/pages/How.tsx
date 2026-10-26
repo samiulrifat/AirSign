@@ -14,7 +14,7 @@ export default function How() {
           <li>Your phone finds the building and suggests the shop: "Are you at Lumen Books, 4th floor?"</li>
           <li>You approve the order in PayPal. Nothing is charged yet.</li>
           <li>A risk engine decides how strict the check is.</li>
-          <li>You move your phone in your personal air signature.</li>
+          <li>You hold the phone still, then sign in the air. No need to touch the screen: the app starts and stops recording by itself and draws your signature as ink.</li>
           <li>Only if the signature passes does the server capture the payment in PayPal.</li>
         </ol>
       </div>

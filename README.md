@@ -11,7 +11,7 @@ No card, no PIN, no terminal: just a mobile browser. Built for the PayPal x AI h
 1. Open the app on a phone (HTTPS is needed for motion sensors and location; see [Run on a phone](#run-on-a-phone)).
 2. Enter a name, give consent, and **set up your air signature**: 7 repetitions of a 2–4 second gesture, like your initials drawn in the air.
 3. On a second screen (laptop), open **`/pos`**, pick **Lumen Books**, PIN **`1234`**, and create a bill.
-4. On the phone tap **Pay in a shop** → *Find my shop* (or a simulated location) → **"Are you at Lumen Books, 4th floor?"** → approve in PayPal → **press and hold the pad, wait for green, sign in the air, release**.
+4. On the phone tap **Pay in a shop** → *Find my shop* (or a simulated location) → **"Are you at Lumen Books, 4th floor?"** → approve in PayPal → **hold the phone still until the pad turns green, sign in the air, hold still again**. No need to touch the screen.
 5. The receipt appears, and the cashier screen flips to *Paid*. The PayPal webhook confirms it a moment later.
 
 **No phone, or not in the shop?** Simulation mode is built in and clearly labeled:
@@ -150,7 +150,7 @@ Customer phone ◀──API──▶ │ intent state machine · PayPal client �
 2. **Shop detection.** Browser location finds the *building*; the shop ranker picks the *shop* (shops on floors 3, 4 and 5 share coordinates). The customer confirms, picks from the list, or types the counter's rotating code.
 3. **PayPal approval.** The server creates an Orders v2 order (intent `CAPTURE`). The buyer approves with the **PayPal JavaScript SDK v6**, and the server checks the approval and amount with PayPal. Nothing is captured yet.
 4. **Risk tier and nonce.** The risk engine picks tier 1, 2 or 3, and the server issues a 128-bit single-use nonce valid for 120 s.
-5. **Sign in the air.** Press and hold the pad. It asks you to hold still for about 0.5 s (to measure the sensor noise floor), then you sign and release.
+5. **Sign in the air, hands-free.** Hold the phone still: the pad turns green, buzzes and plays a tone where the browser allows it. Moving the phone starts the recording, and holding still again ends it; the half-second of stillness before the first stroke is kept, because the server measures the sensor noise there. The signature appears as pen ink, reconstructed from the phone's in-plane movement (accelerometer) and wrist rotation (gyroscope), with a short Redo window before it is sent. Twitches that are too short or weak to be a signature are discarded without using up an attempt. The ink is only a picture for the person; the verifier works on the raw sensor data.
 6. **Verify.** Preprocess, then score against the template, then run the replay and sensor checks, which gives ACCEPT, STEP_UP or REJECT.
 7. **Capture.** Only a VERIFIED intent is captured, with a `PayPal-Request-Id` idempotency key. The receipt comes from the capture response, and the `PAYMENT.CAPTURE.COMPLETED` webhook (signature verified with PayPal) reconciles it.
 

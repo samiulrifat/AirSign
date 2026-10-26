@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { del, get, post, type Recording } from '../lib/api'
 import { errorText } from '../lib/app'
 import { Spinner, TopBar } from '../components/bits'
-import { SignPad, useMotion } from '../components/SignPad'
+import { AirSignPad, useMotion } from '../components/AirSignPad'
 
 type Kind = 'enroll' | 'genuine' | 'imitation'
 type Posture = 'standing' | 'sitting' | 'walking'
@@ -441,7 +441,7 @@ export default function Lab() {
             {kind === 'imitation' && !target ? (
               <div className="notice">Choose whose signature you are imitating.</div>
             ) : (
-              <SignPad motion={motion} busy={busy} onRecording={submit} idleLabel={`Press and hold to record (${KIND_LABEL[kind].toLowerCase()})`} />
+              <AirSignPad motion={motion} busy={busy} onRecording={submit} reviewMs={700} readyLabel={`Ready. Record ${KIND_LABEL[kind].toLowerCase()}`} />
             )}
             {last && <div style={{ marginTop: 12 }}><DiagnosticsCard d={last.d} onUndo={undo} /></div>}
             {error && <div className="notice bad">{error}</div>}

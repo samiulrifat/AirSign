@@ -16,7 +16,7 @@ import {
 import { errorText, floorLabel, money, useApp } from '../lib/app'
 import { prepareApproval, type ApprovalSession } from '../lib/paypal'
 import { CheckIcon, SimBadge, Spinner, TierBadge, TopBar } from '../components/bits'
-import { SignPad, useMotion } from '../components/SignPad'
+import { AirSignPad, useMotion } from '../components/AirSignPad'
 
 type Loc = { lat: number; lon: number; accuracy: number; altitude?: number | null; altitude_accuracy?: number | null }
 type Found = { shop: Shop; how: 'popup' | 'list' | 'code' | 'qr'; checkinPass?: string; invoice?: Invoice | null }
@@ -56,6 +56,21 @@ function FindShop({ onFound, onLocation }: { onFound: (f: Found) => void; onLoca
 
   useEffect(() => {
     get<Building[]>('/buildings').then(setBuildings).catch(() => {})
+  }, [])
+
+  // Location already allowed for this site: find the shop straight away instead of
+  // waiting for a tap. Without permission we wait, so the browser never asks unprompted.
+  useEffect(() => {
+    let cancelled = false
+    navigator.permissions
+      ?.query({ name: 'geolocation' as PermissionName })
+      .then((s) => {
+        if (!cancelled && s.state === 'granted') findMe()
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   async function search(loc: Loc, simulated: boolean) {
@@ -244,8 +259,13 @@ function FindShop({ onFound, onLocation }: { onFound: (f: Found) => void; onLoca
 
 // Step 2: which invoice? ------------------------------------------------------------
 
-function PickInvoice({ found, onPick, onBack }: { found: Found; onPick: (inv: Invoice) => void; onBack: () => void }) {
+function PickInvoice({ found, onPick, onBack, autoPick }: { found: Found; onPick: (inv: Invoice) => void; onBack: () => void; autoPick: boolean }) {
   const [invoices, setInvoices] = useState<Invoice[] | null>(null)
+
+  // Exactly one open bill at this shop: that is the customer's, no need to ask.
+  useEffect(() => {
+    if (autoPick && invoices?.length === 1) onPick(invoices[0])
+  }, [autoPick, invoices, onPick])
 
   useEffect(() => {
     let stop = false
@@ -489,6 +509,7 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
   const [result, setResult] = useState<SignoffResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [canReplay, setCanReplay] = useState(lastRecording !== null)
+  const [preview, setPreview] = useState<{ rows: number[][]; gravity: boolean; key: number } | null>(null)
   const nonceRef = useRef(nonce)
   nonceRef.current = nonce
 
@@ -520,12 +541,15 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
 
   async function simulate(kind: SimKind | 'replay') {
     if (kind === 'replay') {
-      if (lastRecording) await submit(lastRecording, false)
+      if (!lastRecording) return
+      setPreview({ rows: lastRecording.samples, gravity: lastRecording.device.accel_includes_gravity, key: Date.now() })
+      await submit(lastRecording, false)
       return
     }
     setBusy(true)
     try {
       const g = await get<Recording>(`/sim/gesture?kind=${kind}`)
+      setPreview({ rows: g.samples, gravity: false, key: Date.now() })
       await submit({ samples: g.samples, device: g.device, simulated: true })
     } catch (e) {
       setError(errorText(e))
@@ -564,7 +588,13 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
             {intent.attempts_left} {intent.attempts_left === 1 ? 'try' : 'tries'} left
           </span>
         </div>
-        <SignPad motion={motion} busy={busy} onRecording={(r) => submit(r)} idleLabel={`Press and hold to pay ${money(intent.amount_cents, intent.currency)}`} />
+        <AirSignPad
+          motion={motion}
+          busy={busy}
+          onRecording={(r) => submit(r)}
+          readyLabel={`Ready. Sign to pay ${money(intent.amount_cents, intent.currency)}`}
+          preview={preview}
+        />
         {result && (
           <div className={`notice ${decisionClass}`} style={{ marginTop: 12 }}>
             {result.reason}
@@ -671,6 +701,8 @@ export default function Pay() {
   const [nonce, setNonce] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // After the customer has gone back once, stop choosing the bill for them.
+  const [pickedManually, setPickedManually] = useState(false)
 
   // Resume an existing payment from its id.
   useEffect(() => {
@@ -689,6 +721,16 @@ export default function Pay() {
   useEffect(() => {
     if (found?.invoice) setInvoice(found.invoice)
   }, [found])
+
+  // Once the shop and bill are known, go straight to PayPal: no extra confirm step,
+  // the amount is shown again next to the PayPal button.
+  const starting = useRef(false)
+  useEffect(() => {
+    if (found && invoice && !intent && !id && !starting.current && !error) {
+      starting.current = true
+      startIntent().finally(() => (starting.current = false))
+    }
+  }, [found, invoice, intent, id, error])
 
   if (me && !me.user) return <Navigate to="/" replace />
   if (me?.user && !me.signature && !id) return <Navigate to="/enroll" replace />
@@ -716,7 +758,10 @@ export default function Pay() {
 
   async function cancel() {
     if (intent) await post(`/intents/${intent.id}/cancel`).catch(() => {})
-    navigate('/')
+    navigate('/pay', { replace: true })
+    setIntent(null)
+    setFound(null)
+    setInvoice(null)
   }
 
   let body
@@ -763,7 +808,17 @@ export default function Pay() {
   } else if (!found) {
     body = <FindShop onFound={setFound} onLocation={(l, s) => setLoc({ loc: l, simulated: s })} />
   } else if (!invoice) {
-    body = <PickInvoice found={found} onPick={setInvoice} onBack={() => setFound(null)} />
+    body = (
+      <PickInvoice
+        found={found}
+        autoPick={!pickedManually}
+        onPick={setInvoice}
+        onBack={() => {
+          setFound(null)
+          setPickedManually(true)
+        }}
+      />
+    )
   } else {
     body = (
       <div className="card">
@@ -771,12 +826,27 @@ export default function Pay() {
           {found.shop.name} · {floorLabel(found.shop.floor)}
         </p>
         <div className="amount">{money(invoice.amount_cents, invoice.currency)}</div>
-        {invoice.items.length > 0 && <p className="small muted">{invoice.items.map((i) => `${i.qty}× ${i.name}`).join(', ')}</p>}
-        {error && <div className="notice bad">{error}</div>}
-        <button className="btn block" disabled={busy} onClick={startIntent}>
-          {busy ? <Spinner /> : 'Continue to PayPal'}
-        </button>
-        <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setInvoice(null)}>
+        {error ? (
+          <>
+            <div className="notice bad">{error}</div>
+            <button className="btn block" disabled={busy} onClick={() => setError(null)}>
+              Try again
+            </button>
+          </>
+        ) : (
+          <div className="row">
+            <Spinner /> Opening PayPal…
+          </div>
+        )}
+        <button
+          className="btn ghost small"
+          style={{ marginTop: 8 }}
+          onClick={() => {
+            setInvoice(null)
+            setError(null)
+            setPickedManually(true)
+          }}
+        >
           Not my bill
         </button>
       </div>

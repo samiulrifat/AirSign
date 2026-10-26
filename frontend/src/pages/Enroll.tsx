@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { get, post, type Me, type Recording } from '../lib/api'
 import { errorText, useApp } from '../lib/app'
+import { computeInk, type Ink } from '../lib/ink'
 import { CheckIcon, SimBadge, Spinner, TopBar } from '../components/bits'
-import { SignPad, useMotion } from '../components/SignPad'
+import { AirSignPad, InkCanvas, useMotion } from '../components/AirSignPad'
 
 const TARGET = 7
 const MINIMUM = 5
@@ -20,6 +21,14 @@ export default function Enroll() {
   const [last, setLast] = useState<SampleResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [report, setReport] = useState<{ kept: number; dropped: number } | null>(null)
+  const [inks, setInks] = useState<Ink[]>([])
+  const [simInk, setSimInk] = useState<Ink | null>(null)
+  const finishing = useRef(false)
+
+  // Finish by itself once the target is reached: one less tap.
+  useEffect(() => {
+    if ((mode === 'real' || mode === 'sim') && count >= TARGET && !busy && !finishing.current) finish()
+  }, [count, busy, mode])
 
   if (me && !me.user) return <Navigate to="/" replace />
 
@@ -30,6 +39,7 @@ export default function Enroll() {
       await post('/enroll/start', { simulated })
       setCount(0)
       setLast(null)
+      setInks([])
       setMode(simulated ? 'sim' : 'real')
     } catch (e) {
       setError(errorText(e))
@@ -38,32 +48,50 @@ export default function Enroll() {
     }
   }
 
-  async function submit(rec: Recording) {
+  async function submit(rec: Recording): Promise<SampleResult | null> {
     setBusy(true)
     setError(null)
     try {
       const r = await post<SampleResult>('/enroll/sample', rec)
       setLast(r)
       setCount(r.count)
+      if (r.accepted) {
+        const ink = computeInk(rec.samples, rec.device.accel_includes_gravity)
+        if (ink) setInks((xs) => [...xs, ink])
+      }
+      return r
     } catch (e) {
       setError(errorText(e))
+      return null
     } finally {
       setBusy(false)
     }
   }
 
-  async function simSample(kind: 'genuine' | 'shake') {
-    setBusy(true)
+  async function simulate(kind: 'genuine' | 'shake', index: number) {
+    const g = await get<Recording>(`/sim/gesture?kind=${kind}${kind === 'genuine' ? `&enroll_index=${index}` : ''}`)
+    setSimInk(computeInk(g.samples, false))
+    return submit({ samples: g.samples, device: g.device, simulated: true })
+  }
+
+  /** All remaining simulated repetitions in one go. */
+  async function simulateAll() {
+    setError(null)
     try {
-      const g = await get<Recording>(`/sim/gesture?kind=${kind}${kind === 'genuine' ? `&enroll_index=${count}` : ''}`)
-      await submit({ samples: g.samples, device: g.device, simulated: true })
+      let n = count
+      while (n < TARGET) {
+        const r = await simulate('genuine', n)
+        if (!r) break
+        n = r.count
+        await new Promise((res) => setTimeout(res, 350)) // let each signature draw
+      }
     } catch (e) {
       setError(errorText(e))
-      setBusy(false)
     }
   }
 
   async function finish() {
+    finishing.current = true
     setBusy(true)
     setError(null)
     try {
@@ -72,7 +100,9 @@ export default function Enroll() {
       setMe(r.me)
       setMode('done')
     } catch (e) {
+      // For example, the repetitions were too different: record a few more.
       setError(errorText(e))
+      finishing.current = false
     } finally {
       setBusy(false)
     }
@@ -86,12 +116,12 @@ export default function Enroll() {
           <h1>Your air signature</h1>
           <p className="muted">
             Choose a movement that is personal and not too simple, for example writing your initials in the air with the
-            phone, or a small loop and a zigzag. It should take 2 to 4 seconds.
+            phone. It should take 2 to 4 seconds.
           </p>
           <ol className="muted small" style={{ paddingLeft: 18 }}>
-            <li>Press and hold the pad. Keep the phone still until it turns green.</li>
-            <li>Move the phone in your signature, then release.</li>
-            <li>Repeat {TARGET} times, the same way each time.</li>
+            <li>Hold the phone still until the pad turns green.</li>
+            <li>Sign in the air, then hold still. No need to touch the screen.</li>
+            <li>Repeat {TARGET} times, the same way each time. The next one starts by itself.</li>
           </ol>
           {error && <div className="notice bad">{error}</div>}
           <button className="btn block" disabled={busy} onClick={() => begin(false)}>
@@ -112,46 +142,59 @@ export default function Enroll() {
         <div className="card">
           <div className="row between">
             <h2>
-              Repetition {Math.min(count + 1, MAX)} of {TARGET}
+              {count >= TARGET ? 'Saving…' : `Signature ${Math.min(count + 1, MAX)} of ${TARGET}`}
             </h2>
             {mode === 'sim' && <SimBadge />}
           </div>
-          <div className="dots" aria-label={`${count} of ${TARGET} done`}>
-            {Array.from({ length: TARGET }, (_, i) => (
-              <span key={i} className={i < count ? 'done' : ''} />
-            ))}
-          </div>
 
           {mode === 'real' ? (
-            count < MAX && <SignPad motion={motion} busy={busy} onRecording={submit} />
+            count < MAX && (
+              <AirSignPad motion={motion} busy={busy} onRecording={submit} reviewMs={900} readyLabel="Ready. Sign now" />
+            )
           ) : (
-            <div className="sim-strip stack">
-              <h3>Simulation</h3>
-              <p className="small muted">
-                Generates a labeled synthetic recording of "your" signature, with natural variation, sensor noise and
-                timing jitter. It goes through exactly the same checks as a real one.
-              </p>
-              <button className="btn sim block" disabled={busy || count >= MAX} onClick={() => simSample('genuine')}>
-                {busy ? <Spinner /> : 'Record a simulated repetition'}
-              </button>
-              <button className="btn ghost small block" disabled={busy} onClick={() => simSample('shake')}>
-                Try a lazy shake instead (should be rejected)
-              </button>
+            <div className="stack">
+              <div className="pad air review">
+                <InkCanvas ink={simInk} key={inks.length} />
+                {!simInk && <div className="label">Simulated signatures appear here</div>}
+              </div>
+              <div className="sim-strip stack">
+                <h3>Simulation</h3>
+                <p className="small muted">
+                  Labeled synthetic recordings of "your" signature, with natural variation, sensor noise and timing jitter.
+                  They go through exactly the same checks as real ones.
+                </p>
+                <button className="btn sim block" disabled={busy || count >= TARGET} onClick={simulateAll}>
+                  {busy ? <Spinner /> : count ? `Record the remaining ${TARGET - count}` : `Record all ${TARGET} simulated signatures`}
+                </button>
+                <button className="btn ghost small block" disabled={busy} onClick={() => simulate('shake', 0).catch((e) => setError(errorText(e)))}>
+                  Try a lazy shake instead (should be rejected)
+                </button>
+              </div>
             </div>
           )}
 
-          {last && (
-            <div className={`notice ${last.accepted ? 'ok' : 'warn'}`} style={{ marginTop: 12 }}>
-              {last.accepted
-                ? `Good repetition (${last.quality?.duration_s}s, ${last.quality?.direction_changes} direction changes).`
-                : last.reason}
+          {inks.length > 0 && (
+            <div className="thumbs" aria-label={`${inks.length} signatures recorded`}>
+              {inks.map((ink, i) => (
+                <InkCanvas key={i} ink={ink} animate={false} className="thumb" />
+              ))}
+              {Array.from({ length: Math.max(0, TARGET - inks.length) }, (_, i) => (
+                <span key={`e${i}`} className="thumb empty" />
+              ))}
+            </div>
+          )}
+          {inks.length > 1 && <p className="tiny center">Similar shapes mean a reliable signature.</p>}
+
+          {last && !last.accepted && (
+            <div className="notice warn" style={{ marginTop: 12 }}>
+              {last.reason}
             </div>
           )}
           {error && <div className="notice bad">{error}</div>}
 
-          {count >= MINIMUM && (
-            <button className="btn block" disabled={busy} onClick={finish} style={{ marginTop: 8 }}>
-              {count >= TARGET ? 'Finish' : `Finish with ${count} repetitions`}
+          {count >= MINIMUM && count < TARGET && (
+            <button className="btn ghost block" disabled={busy} onClick={finish} style={{ marginTop: 8 }}>
+              Finish now with {count}
             </button>
           )}
         </div>
@@ -161,6 +204,11 @@ export default function Enroll() {
         <div className="card center">
           <CheckIcon />
           <h1>Air signature saved</h1>
+          {inks.length > 0 && (
+            <div className="pad air review small-pad">
+              <InkCanvas ink={inks[inks.length - 1]} />
+            </div>
+          )}
           <p className="muted">
             Kept {report?.kept} repetitions{report?.dropped ? `, set aside ${report.dropped} that differed from the rest` : ''}. Your
             personal threshold is set from how much your own repetitions vary.
