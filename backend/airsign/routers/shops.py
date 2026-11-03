@@ -189,12 +189,17 @@ def checkin(body: CheckinIn, session=Depends(customer), db: Session = Depends(ge
     }
 
 
-def checkin_pass_valid(value: str | None, user_id: str, merchant_id: str) -> bool:
+def checkin_pass_merchant(value: str | None, user_id: str) -> str | None:
+    """The shop this customer checked in at with a code, if the pass is theirs and still valid."""
     raw = unsign_value(value, "checkin")
     if not raw:
-        return False
+        return None
     uid, mid, exp = raw.split("|")
-    return uid == user_id and mid == merchant_id and int(exp) >= time.time()
+    return mid if uid == user_id and int(exp) >= time.time() else None
+
+
+def checkin_pass_valid(value: str | None, user_id: str, merchant_id: str) -> bool:
+    return checkin_pass_merchant(value, user_id) == merchant_id
 
 
 class MoveIn(BaseModel):

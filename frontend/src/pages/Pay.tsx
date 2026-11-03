@@ -17,6 +17,8 @@ import { errorText, floorLabel, money, useApp } from '../lib/app'
 import { prepareApproval, type ApprovalSession } from '../lib/paypal'
 import { CheckIcon, DemoControls, SimBadge, Spinner, Stepper, TierBadge, TopBar } from '../components/bits'
 import { computeInk } from '../lib/ink'
+import { setSpokenCues } from '../lib/feedback'
+import { prompt } from '../lib/speech'
 import type { BillStart } from '../components/BillAlerts'
 import { AirSignPad, InkCanvas, useMotion } from '../components/AirSignPad'
 
@@ -534,6 +536,13 @@ function Sign({ intent, nonce, onUpdate, onResult, onCancel }: { intent: Intent;
   const nonceRef = useRef(nonce)
   nonceRef.current = nonce
 
+  // The phone is moving and hard to read while signing, so the steps are also spoken.
+  useEffect(() => {
+    prompt(`${intent.shop.name}, ${money(intent.amount_cents, intent.currency)}. Hold your phone still.`)
+    setSpokenCues(true)
+    return () => setSpokenCues(false)
+  }, [intent.id, intent.shop.name, intent.amount_cents, intent.currency])
+
   async function submit(rec: Recording, remember = true) {
     setBusy(true)
     setError(null)
@@ -552,6 +561,7 @@ function Sign({ intent, nonce, onUpdate, onResult, onCancel }: { intent: Intent;
         setCanReplay(true)
       }
       setResult(r)
+      if (r.state !== 'COMPLETED') prompt(r.reason)
       onResult(r)
       onUpdate(r.intent, r.nonce)
     } catch (e) {
@@ -650,6 +660,13 @@ function Outcome({ intent, result }: { intent: Intent; result: SignoffResult | n
   const [fresh, setFresh] = useState(intent)
   // Shown only right after signing, from the recording still in memory. It is never stored.
   const [ink] = useState(() => (result && lastRecording ? computeInk(lastRecording.samples, lastRecording.device.accel_includes_gravity) : null))
+  // Only right after signing, not when opening an old payment from the history.
+  const paidNow = Boolean(result) && intent.state === 'COMPLETED'
+  const amountSpoken = money(intent.amount_cents, intent.currency)
+  const shopSpoken = intent.shop.name
+  useEffect(() => {
+    if (paidNow) prompt(`Paid. ${amountSpoken} to ${shopSpoken}.`)
+  }, [paidNow, amountSpoken, shopSpoken])
   useEffect(() => {
     setFresh(intent)
     if (intent.state !== 'COMPLETED' || intent.paypal.webhook_confirmed) return
@@ -733,7 +750,7 @@ export default function Pay() {
     routerState?.checkin
       ? { shop: routerState.checkin.shop, how: 'qr', checkinPass: routerState.checkin.checkin_pass, invoice: routerState.checkin.invoice }
       : bill
-        ? { shop: bill.shop, how: bill.sent ? 'sent' : 'popup', invoice: bill.invoice }
+        ? { shop: bill.shop, how: bill.sent ? 'sent' : 'popup', invoice: bill.invoice, checkinPass: bill.checkinPass ?? undefined }
         : null,
   )
   const [invoice, setInvoice] = useState<Invoice | null>(routerState?.checkin?.invoice ?? bill?.invoice ?? null)

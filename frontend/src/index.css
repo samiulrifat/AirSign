@@ -1166,3 +1166,80 @@ code,
     animation-duration: 2s;
   }
 }
+
+/* Voice assistant and the join code */
+
+.assistant {
+  background: var(--surface);
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+
+.assistant-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.assistant-head h2 {
+  margin: 0;
+}
+
+.assistant-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.assistant-state.listening {
+  color: var(--accent);
+}
+
+.mic-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: mic-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.assistant-log {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  font-size: 0.92rem;
+}
+
+.assistant-log li {
+  padding: 3px 0;
+  color: var(--ink-2);
+}
+
+.assistant-log li.heard {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.join-code {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mic-dot {
+    animation: none;
+  }
+}

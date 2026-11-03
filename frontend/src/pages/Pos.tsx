@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { get, post, type Invoice, type Shop } from '../lib/api'
 import { errorText, floorLabel, money, useApp } from '../lib/app'
-import { canListen, listen, speak, stopSpeaking } from '../lib/speech'
+import { canListen, listen, listenProblem, speak, stopSpeaking } from '../lib/speech'
 import { CheckIcon, SimBadge, Spinner, TopBar } from '../components/bits'
+import VoiceAssistant from '../components/VoiceAssistant'
 
 type Customer = { name: string; code: string | null }
 type PosInvoice = Invoice & {
@@ -128,7 +129,7 @@ function OrderInput({ onDraft }: { onDraft: (d: Draft) => void }) {
     const heard = await listen()
     setListening(false)
     if (heard[0]) await ask({ text: heard[0] })
-    else setError('Nothing was heard. Say the order again, or type it.')
+    else setError(listenProblem() ?? 'Nothing was heard. Say the order again, or type it.')
   }
 
   return (
@@ -250,20 +251,20 @@ function NewInvoice({ onCreated }: { onCreated: (inv: Invoice) => void }) {
   )
 }
 
-function CheckinCode({ invoice }: { invoice: PosInvoice }) {
+function CheckinCode({ invoice, label }: { invoice?: PosInvoice; label: string }) {
   const [tok, setTok] = useState<{ token: string; code: string } | null>(null)
   const [left, setLeft] = useState(30)
   const canvas = useRef<HTMLCanvasElement>(null)
 
   const refresh = useCallback(async () => {
     try {
-      const t = await post<{ token: string; code: string }>('/pos/checkin-token', { invoice_id: invoice.id })
+      const t = await post<{ token: string; code: string }>('/pos/checkin-token', { invoice_id: invoice?.id ?? null })
       setTok(t)
       setLeft(30)
     } catch {
       setTok(null)
     }
-  }, [invoice.id])
+  }, [invoice?.id])
 
   useEffect(() => {
     void refresh()
@@ -282,7 +283,8 @@ function CheckinCode({ invoice }: { invoice: PosInvoice }) {
   }, [tok])
 
   return (
-    <div className="center" style={{ marginTop: 12 }}>
+    <div className="center join-code">
+      <p className="small muted">{label}</p>
       <div className="qr">
         <canvas ref={canvas} />
       </div>
@@ -368,7 +370,10 @@ function AskName({ invoice, autoAsk, onSent, onPick, busy }: { invoice: PosInvoi
     const heard = await listen()
     if (id !== run.current) return
     if (heard.length) await match(heard, id)
-    else setPhase('unheard')
+    else {
+      setError(listenProblem())
+      setPhase('unheard')
+    }
   }, [match])
 
   useEffect(() => {
@@ -426,7 +431,8 @@ function AskName({ invoice, autoAsk, onSent, onPick, busy }: { invoice: PosInvoi
 function BillPanel({ invoice, mode, people, autoAsk, reload }: { invoice: PosInvoice; mode: Mode; people: Nearby[]; autoAsk: boolean; reload: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [showCode, setShowCode] = useState(false)
+  const [wantCode, setWantCode] = useState(false)
+  const showCode = wantCode || (people.length === 0 && mode === 'person')
   const p = invoice.payment
   const items = invoice.items.map((i) => `${i.qty}× ${i.name}`).join(', ')
   const signing = p && !['COMPLETED', 'CANCELLED', 'EXPIRED', 'LOCKED', 'FAILED'].includes(p.state)
@@ -502,7 +508,7 @@ function BillPanel({ invoice, mode, people, autoAsk, reload }: { invoice: PosInv
           <p className="tiny">People with AirSign open in this building, which can include other floors. Check the code matches their phone.</p>
         </>
       ) : (
-        <p className="notice">Nobody nearby yet. Ask the customer to open AirSign and tap "I'm at a shop".</p>
+        <p className="notice">Nobody nearby yet. The customer can scan the code below to pay this bill.</p>
       )}
       {!invoice.customer && !signing && (
         <div className="fallbacks">
@@ -513,12 +519,12 @@ function BillPanel({ invoice, mode, people, autoAsk, reload }: { invoice: PosInv
               Alert everyone nearby
             </button>
           )}
-          <button className="btn ghost small" onClick={() => setShowCode((s) => !s)}>
-            {showCode ? 'Hide the code' : 'Show a QR code'}
+          <button className="btn ghost small" onClick={() => setWantCode(!showCode)}>
+            {showCode ? 'Hide the code' : 'Customer not listed? Show a code'}
           </button>
         </div>
       )}
-      {showCode && !invoice.customer && <CheckinCode invoice={invoice} />}
+      {showCode && !invoice.customer && <CheckinCode invoice={invoice} label="Scan with the phone's camera, or type the code in AirSign. It opens this bill." />}
     </div>
   )
 }
@@ -530,6 +536,7 @@ export default function Pos() {
   const [selected, setSelected] = useState<string | null>(null)
   const [justCreated, setJustCreated] = useState<string | null>(null)
   const [mode, setMode] = useState<Mode>(savedMode)
+  const [showJoin, setShowJoin] = useState(false)
 
   useEffect(() => {
     get<Shop | null>('/pos/me').then(setShop).catch(() => setShop(null))
@@ -563,6 +570,21 @@ export default function Pos() {
   }
 
   const current = invoices.find((i) => i.id === selected)
+
+  // Say how the payment ended, once, and only for a bill this screen saw open.
+  const lastSeen = useRef<{ id: string; open: boolean } | null>(null)
+  const status = current?.status
+  const paymentState = current?.payment?.state
+  const payer = current?.customer?.name
+  useEffect(() => {
+    if (!current) return
+    const seen = lastSeen.current
+    const open = status === 'OPEN' && paymentState !== 'LOCKED' && paymentState !== 'FAILED'
+    if (mode === 'ai' && seen?.id === current.id && seen.open && !open) {
+      void speak(status === 'PAID' ? `Payment received.${payer ? ` Thank you, ${payer}.` : ''}` : status === 'OPEN' ? 'That payment did not go through. Please try again.' : '')
+    }
+    lastSeen.current = { id: current.id, open }
+  }, [current, status, paymentState, payer, mode])
 
   return (
     <div className="app wide">
@@ -600,6 +622,15 @@ export default function Pos() {
           </div>
           <div className="pos-grid">
             <div>
+              {mode === 'ai' && (
+                <VoiceAssistant
+                  onCreated={(inv) => {
+                    setSelected(inv.id)
+                    setJustCreated(inv.id)
+                    void load()
+                  }}
+                />
+              )}
               <NewInvoice
                 onCreated={(inv) => {
                   setSelected(inv.id)
@@ -657,7 +688,7 @@ export default function Pos() {
               ) : (
                 <div className="card bill-panel empty">
                   <h2>No bill open</h2>
-                  <p className="muted small">{people.length ? `${people.length} ${people.length === 1 ? 'customer is' : 'customers are'} nearby.` : 'Customers with AirSign open appear here.'}</p>
+                  <p className="muted small">{people.length ? `${people.length} ${people.length === 1 ? 'customer is' : 'customers are'} nearby.` : 'Nobody on the list yet.'}</p>
                   {people.length > 0 && (
                     <ul className="list people">
                       {people.map((p) => (
@@ -668,6 +699,13 @@ export default function Pos() {
                         </li>
                       ))}
                     </ul>
+                  )}
+                  {showJoin || people.length === 0 ? (
+                    <CheckinCode label="Customer not listed? They scan this, or type the code in AirSign." />
+                  ) : (
+                    <button className="btn ghost small" onClick={() => setShowJoin(true)}>
+                      Customer not listed? Show a code
+                    </button>
                   )}
                 </div>
               )}
