@@ -14,9 +14,9 @@ from ..audit import audit
 from ..auth import customer
 from ..config import get_settings
 from ..db import get_db
-from ..intents import local_now
+from ..intents import TERMINAL, local_now
 from ..ratelimit import rate_limit
-from ..models import Building, CheckinToken, Invoice, Merchant, PaymentHistory, now
+from ..models import Building, CheckinToken, Invoice, Merchant, PaymentHistory, PaymentIntent, now
 from ..security import read_checkin_token, sign_value, unsign_value, verify_checkin_signature
 from ..seed import move_building
 from ..shops import MAX_ACCURACY_M, ShopCandidate, haversine_m, is_open, rank
@@ -49,6 +49,47 @@ def buildings(db: Session = Depends(get_db)):
     return out
 
 
+def _nearest_building(db: Session, lat: float, lon: float, accuracy: float) -> tuple[float, Building] | None:
+    best = None
+    for b in db.scalars(select(Building)):
+        d = haversine_m(lat, lon, b.lat, b.lon)
+        if d <= b.radius_m + accuracy and (best is None or d < best[0]):
+            best = (d, b)
+    return best
+
+
+@router.get("/bills/nearby", dependencies=[Depends(rate_limit("bills"))])
+def nearby_bills(
+    lat: float = Query(ge=-90, le=90),
+    lon: float = Query(ge=-180, le=180),
+    accuracy: float = Query(gt=0),
+    session=Depends(customer),
+    db: Session = Depends(get_db),
+):
+    """Open bills in the building the phone is in, polled while bill alerts are on. The position is not stored."""
+    user, _ = session
+    best = None if accuracy > MAX_ACCURACY_M else _nearest_building(db, lat, lon, accuracy)
+    if best is None:
+        return {"bills": []}
+    rows = db.execute(
+        select(Invoice, Merchant)
+        .join(Merchant, Invoice.merchant_id == Merchant.id)
+        .where(Merchant.building_id == best[1].id, Invoice.status == "OPEN", Invoice.created_at >= now() - OPEN_INVOICE_WINDOW)
+        .order_by(Invoice.created_at.desc())
+    ).all()
+    busy = set(
+        db.scalars(
+            select(PaymentIntent.invoice_id).where(
+                PaymentIntent.invoice_id.in_([i.id for i, _ in rows]),
+                PaymentIntent.user_id != user.id,
+                PaymentIntent.state.not_in(tuple(TERMINAL)),
+                PaymentIntent.expires_at > now(),
+            )
+        )
+    )
+    return {"bills": [{"shop": shop_view(m), "invoice": invoice_view(i)} for i, m in rows if i.id not in busy]}
+
+
 @router.get("/shops/nearby")
 def nearby(
     lat: float = Query(ge=-90, le=90),
@@ -63,11 +104,7 @@ def nearby(
     if accuracy > MAX_ACCURACY_M:
         return {"status": "low_accuracy", "message": "Your location is too approximate. Turn on precise location, or pick the shop from the list."}
 
-    best = None
-    for b in db.scalars(select(Building)):
-        d = haversine_m(lat, lon, b.lat, b.lon)
-        if d <= b.radius_m + accuracy and (best is None or d < best[0]):
-            best = (d, b)
+    best = _nearest_building(db, lat, lon, accuracy)
     if best is None:
         return {"status": "none", "message": "No AirSign shops near you."}
     building = best[1]

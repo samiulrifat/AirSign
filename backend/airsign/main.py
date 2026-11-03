@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import REPO_ROOT, get_settings
 from .db import SessionLocal, init_db
-from .routers import customer, lab, payments, pos, shops, sim
+from .routers import customer, lab, payments, pos, shops, sim, wallet
 from .seed import seed_shops
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AirSign", version="0.1.0", lifespan=lifespan)
-for r in (customer.router, shops.router, payments.router, pos.router, sim.router, lab.router):
+for r in (customer.router, shops.router, payments.router, pos.router, sim.router, lab.router, wallet.router):
     app.include_router(r)
 
 

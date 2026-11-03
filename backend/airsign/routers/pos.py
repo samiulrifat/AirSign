@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import re
 import secrets
 import time
 from datetime import timedelta
@@ -12,6 +15,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..ai import cashier as ai_cashier
+from ..ai.gemini import GeminiUnavailable
 from ..audit import audit
 from ..auth import POS_COOKIE, cashier, start_pos_session
 from ..config import get_settings
@@ -20,12 +25,15 @@ from ..intents import TERMINAL
 from ..ratelimit import rate_limit
 from ..models import CheckinToken, Invoice, Merchant, PaymentIntent, now
 from ..security import check_pin, make_checkin_token
+from ..seed import catalog_for
 from .shops import invoice_view, shop_view
 
 router = APIRouter(prefix="/api/pos")
 
 MAX_INVOICE_CENTS = 200_000  # per-shop limit for the demo
 TOKEN_TTL_S = 60
+MAX_IMAGE_CHARS = 5_000_000  # the screen shrinks photos first, so this is well above a real one
+DATA_URL = re.compile(r"^data:(image/(?:jpeg|png|webp));base64,(.+)$", re.DOTALL)
 
 
 def fail(code: str, message: str, status: int = 400):
@@ -126,6 +134,42 @@ def list_invoices(merchant: Merchant = Depends(cashier), db: Session = Depends(g
             }
         )
     return out
+
+
+@router.get("/catalog")
+def catalog(merchant: Merchant = Depends(cashier)):
+    return [{"name": c["name"], "price": c["price"]} for c in catalog_for(merchant.category)]
+
+
+class AiBillIn(BaseModel):
+    text: str | None = Field(default=None, max_length=300)
+    image: str | None = Field(default=None, max_length=MAX_IMAGE_CHARS)  # a data: URL
+
+
+def _image(data_url: str) -> tuple[str, bytes]:
+    match = DATA_URL.match(data_url)
+    if not match:
+        fail("bad_image", "Use a JPEG, PNG or WebP photo.")
+    try:
+        return match.group(1), base64.b64decode(match.group(2), validate=True)
+    except binascii.Error:
+        fail("bad_image", "That photo could not be read.")
+
+
+@router.post("/ai-bill", dependencies=[Depends(rate_limit("ai_bill"))])
+def ai_bill(body: AiBillIn, merchant: Merchant = Depends(cashier), db: Session = Depends(get_db)):
+    """Draft bill lines from a photo or a description. Creates nothing: the cashier checks it first."""
+    text = (body.text or "").strip() or None
+    if not text and not body.image:
+        fail("empty", "Describe the order or add a photo.")
+    image = _image(body.image) if body.image else None
+    try:
+        draft = ai_cashier.draft_bill(merchant.category, text, image)
+    except GeminiUnavailable:
+        fail("ai_unavailable", "The AI could not read the photo right now. Type the items instead.", 503)
+    audit(db, merchant.id, "pos.ai_bill", None, source=draft["source"], photo=image is not None, lines=len(draft["lines"]))
+    db.commit()
+    return draft
 
 
 @router.post("/invoices/{invoice_id}/cancel")

@@ -3,6 +3,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { del, get, post, type Intent, type Me } from '../lib/api'
 import { errorText, floorLabel, money, useApp } from '../lib/app'
 import { SimBadge, Spinner, TopBar } from '../components/bits'
+import BillAlerts from '../components/BillAlerts'
+import WalletCard from '../components/WalletCard'
 
 function Welcome() {
   const { setMe } = useApp()
@@ -116,6 +118,9 @@ function Dashboard({ me }: { me: Me }) {
 
       {error && <div className="notice bad">{error}</div>}
 
+      {sig && <BillAlerts />}
+      {sig && <WalletCard me={me} />}
+
       {sig && (
         <div className="card">
           <div className="row between">
@@ -193,7 +198,7 @@ function Dashboard({ me }: { me: Me }) {
         </div>
         <p className="tiny" style={{ marginTop: 12 }}>
           PayPal: {config?.paypal_mode === 'sandbox' ? 'sandbox' : 'built-in mock (sandbox credentials not configured)'}.
-          Location is only read when you tap, and only the matched shop is kept.
+          Location is read when you tap or while bill alerts are on, and only the matched shop is kept.
         </p>
       </details>
     </>

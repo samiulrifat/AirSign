@@ -16,6 +16,7 @@ import {
 import { errorText, floorLabel, money, useApp } from '../lib/app'
 import { prepareApproval, type ApprovalSession } from '../lib/paypal'
 import { CheckIcon, SimBadge, Spinner, TierBadge, TopBar } from '../components/bits'
+import type { BillStart } from '../components/BillAlerts'
 import { AirSignPad, useMotion } from '../components/AirSignPad'
 
 type Loc = { lat: number; lon: number; accuracy: number; altitude?: number | null; altitude_accuracy?: number | null }
@@ -335,6 +336,7 @@ function Summary({ intent }: { intent: Intent }) {
           {intent.shop.name} · {floorLabel(intent.shop.floor)}
         </span>
         <span className="row" style={{ gap: 6 }}>
+          {intent.funding === 'wallet' && <span className="badge accent">Saved PayPal</span>}
           {intent.location_verified && <span className="badge ok">At the counter</span>}
           {intent.simulated && <SimBadge />}
         </span>
@@ -498,11 +500,31 @@ function MatchMeter({ z, k }: { z: number; k: number }) {
   )
 }
 
+function AiChecks({ result }: { result: SignoffResult }) {
+  const m = result.match
+  if (!m) return null
+  const rows: [string, boolean][] = [
+    ...(m.z_nn !== null ? ([['Neural network match (Siamese CNN)', m.z_nn <= m.k]] as [string, boolean][]) : []),
+    ['Motion shape matches (DTW)', m.z_dtw <= m.k],
+    ['Real sensor data', !result.sensor_flags?.length],
+    ['Live, not a replay', !result.replay_flags?.length],
+  ]
+  return (
+    <ul className="ai-checks">
+      {rows.map(([label, ok]) => (
+        <li key={label} className={ok ? 'ok' : 'bad'}>
+          <span aria-hidden="true">{ok ? '✓' : '✕'}</span> {label}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 // The last accepted recording this tab submitted, kept in memory only (never in storage) so
 // the demo can replay an earlier payment's signature against a new payment.
 let lastRecording: Recording | null = null
 
-function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUpdate: (i: Intent, nonce: string | null) => void }) {
+function Sign({ intent, nonce, onUpdate, onResult, onCancel }: { intent: Intent; nonce: string; onUpdate: (i: Intent, nonce: string | null) => void; onResult: (r: SignoffResult) => void; onCancel: () => void }) {
   const { config } = useApp()
   const motion = useMotion()
   const [busy, setBusy] = useState(false)
@@ -531,6 +553,7 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
         setCanReplay(true)
       }
       setResult(r)
+      onResult(r)
       onUpdate(r.intent, r.nonce)
     } catch (e) {
       setError(errorText(e))
@@ -572,7 +595,10 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
         <div className="card flat">
           <div className="row between wrap">
             <h3 style={{ margin: 0 }}>Security check</h3>
-            <TierBadge tier={risk.tier} />
+            <span className="row" style={{ gap: 6 }}>
+              {risk.explanation_source === 'gemini' && <span className="badge accent">Worded by Gemini</span>}
+              <TierBadge tier={risk.tier} />
+            </span>
           </div>
           <p className="small muted" style={{ margin: '8px 0 0' }}>
             {risk.explanation}
@@ -599,10 +625,14 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
           <div className={`notice ${decisionClass}`} style={{ marginTop: 12 }}>
             {result.reason}
             {result.flags.length > 0 && <div className="tiny">Flags: {result.flags.join(', ')}</div>}
+            <AiChecks result={result} />
             {result.match && <MatchMeter z={result.match.z} k={result.match.k} />}
           </div>
         )}
         {error && <div className="notice bad">{error}</div>}
+        <button className="btn ghost small" style={{ marginTop: 12 }} onClick={onCancel} disabled={busy}>
+          Not my bill, cancel
+        </button>
       </div>
       {config?.allow_simulation && (
         <div className="sim-strip stack">
@@ -623,7 +653,7 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
 
 // Outcome ----------------------------------------------------------------------------
 
-function Outcome({ intent }: { intent: Intent }) {
+function Outcome({ intent, result }: { intent: Intent; result: SignoffResult | null }) {
   const [fresh, setFresh] = useState(intent)
   useEffect(() => {
     setFresh(intent)
@@ -649,6 +679,7 @@ function Outcome({ intent }: { intent: Intent }) {
         </p>
         <div className="row wrap" style={{ justifyContent: 'center', marginBottom: 12 }}>
           <span className="badge accent">PayPal {fresh.paypal.mode}</span>
+          {fresh.funding === 'wallet' && <span className="badge accent">Saved PayPal</span>}
           {fresh.paypal.webhook_confirmed ? <span className="badge ok">Webhook confirmed</span> : <span className="badge warn">Awaiting webhook</span>}
           {fresh.simulated && <SimBadge />}
         </div>
@@ -656,6 +687,13 @@ function Outcome({ intent }: { intent: Intent }) {
           Capture {fresh.paypal.capture_id} · order {fresh.paypal.order_id}
           {last?.latency_ms != null && ` · verified in ${Math.round(last.latency_ms)} ms`}
         </p>
+        {result?.match && (
+          <div className="notice" style={{ textAlign: 'left', marginBottom: 12 }}>
+            <strong className="small">What the AI checked</strong>
+            <AiChecks result={result} />
+            <MatchMeter z={result.match.z} k={result.match.k} />
+          </div>
+        )}
         <Link to="/" className="btn block">
           Done
         </Link>
@@ -689,16 +727,20 @@ export default function Pay() {
   const { me } = useApp()
   const { id } = useParams()
   const navigate = useNavigate()
-  const routerState = useLocation().state as { checkin?: CheckinState } | null
+  const routerState = useLocation().state as { checkin?: CheckinState; bill?: BillStart } | null
+  const bill = routerState?.bill
   const [found, setFound] = useState<Found | null>(
     routerState?.checkin
       ? { shop: routerState.checkin.shop, how: 'qr', checkinPass: routerState.checkin.checkin_pass, invoice: routerState.checkin.invoice }
-      : null,
+      : bill
+        ? { shop: bill.shop, how: 'popup', invoice: bill.invoice }
+        : null,
   )
-  const [invoice, setInvoice] = useState<Invoice | null>(routerState?.checkin?.invoice ?? null)
-  const [loc, setLoc] = useState<{ loc: Loc | null; simulated: boolean }>({ loc: null, simulated: false })
+  const [invoice, setInvoice] = useState<Invoice | null>(routerState?.checkin?.invoice ?? bill?.invoice ?? null)
+  const [loc, setLoc] = useState<{ loc: Loc | null; simulated: boolean }>({ loc: bill?.location ?? null, simulated: bill?.simulated ?? false })
   const [intent, setIntent] = useState<Intent | null>(null)
   const [nonce, setNonce] = useState<string | null>(null)
+  const [lastResult, setLastResult] = useState<SignoffResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   // After the customer has gone back once, stop choosing the bill for them.
@@ -740,6 +782,7 @@ export default function Pay() {
     setBusy(true)
     setError(null)
     try {
+      // A saved PayPal account means the payment comes back ready to sign, with its nonce.
       const i = await post<Intent>('/intents', {
         invoice_id: invoice.id,
         confirmed_by: found.how,
@@ -748,6 +791,7 @@ export default function Pay() {
         checkin_pass: found.checkinPass ?? null,
       })
       setIntent(i)
+      if (i.nonce) setNonce(i.nonce)
       navigate(`/pay/${i.id}`, { replace: true })
     } catch (e) {
       setError(errorText(e))
@@ -791,11 +835,13 @@ export default function Pay() {
               setIntent(i)
               if (n) setNonce(n)
             }}
+            onResult={setLastResult}
+            onCancel={cancel}
           />
         </>
       )
     } else if (['COMPLETED', 'LOCKED', 'FAILED', 'EXPIRED', 'CANCELLED'].includes(intent.state)) {
-      body = <Outcome intent={intent} />
+      body = <Outcome intent={intent} result={lastResult} />
     } else {
       body = (
         <div className="card">
@@ -835,7 +881,7 @@ export default function Pay() {
           </>
         ) : (
           <div className="row">
-            <Spinner /> Opening PayPal…
+            <Spinner /> Getting your payment ready…
           </div>
         )}
         <button

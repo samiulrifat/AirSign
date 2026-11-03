@@ -7,6 +7,7 @@ import Pos from './pages/Pos'
 import Checkin from './pages/Checkin'
 import How from './pages/How'
 import Lab from './pages/Lab'
+import WalletReturn from './pages/WalletReturn'
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="/pos" element={<Pos />} />
           <Route path="/how" element={<How />} />
           <Route path="/lab" element={<Lab />} />
+          <Route path="/wallet/return" element={<WalletReturn />} />
           <Route path="*" element={<Home />} />
         </Routes>
       </BrowserRouter>

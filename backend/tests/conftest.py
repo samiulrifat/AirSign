@@ -12,6 +12,7 @@ os.environ["AIRSIGN_PAYPAL_MODE"] = "mock"
 os.environ["AIRSIGN_ALLOW_SIMULATION"] = "true"
 os.environ["AIRSIGN_LAB_CODE"] = "test-lab"
 os.environ["AIRSIGN_RATE_LIMITS"] = "false"  # test_ratelimit.py turns them on
+os.environ["AIRSIGN_GEMINI_API_KEY"] = ""  # never call Gemini from tests, even with a key in .env
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

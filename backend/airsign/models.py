@@ -126,6 +126,18 @@ class AttemptFingerprint(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
+class PayPalWallet(Base):
+    """A PayPal account the customer chose to save (PayPal Vault), so later payments skip the PayPal window."""
+
+    __tablename__ = "paypal_wallets"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(8), default="PENDING")  # PENDING, ACTIVE
+    setup_token_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    payment_token_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    payer_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    linked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
 class PaymentIntent(Base):
     __tablename__ = "payment_intents"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("pi"))
@@ -136,6 +148,8 @@ class PaymentIntent(Base):
     amount_cents: Mapped[int] = mapped_column(Integer)
     currency: Mapped[str] = mapped_column(String(3))
     state: Mapped[str] = mapped_column(String(12), index=True)
+    # order: the buyer approves a PayPal order. wallet: charged from the saved account after the signature.
+    funding: Mapped[str] = mapped_column(String(8), default="order")
     paypal_order_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     risk_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     risk_tier: Mapped[int | None] = mapped_column(Integer, nullable=True)

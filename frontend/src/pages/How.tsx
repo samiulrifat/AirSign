@@ -10,17 +10,25 @@ export default function How() {
       <div className="card">
         <h1>How AirSign works</h1>
         <ol className="muted" style={{ paddingLeft: 18 }}>
-          <li>The cashier creates a bill on the shop screen.</li>
-          <li>Your phone finds the building and suggests the shop: "Are you at Lumen Books, 4th floor?"</li>
-          <li>You approve the order in PayPal. Nothing is charged yet.</li>
+          <li>The cashier snaps a photo of the items or says the order, and the AI drafts the bill. The cashier checks it and sends it.</li>
+          <li>With bill alerts on, your phone alerts you. You can also find the shop yourself: "Are you at Lumen Books, 4th floor?"</li>
+          <li>You save your PayPal once. Without a saved account, or for bills over $200, you approve the order in PayPal. Nothing is charged yet.</li>
           <li>A risk engine decides how strict the check is.</li>
           <li>You hold the phone still, then sign in the air. No need to touch the screen: the app starts and stops recording by itself and draws your signature as ink.</li>
-          <li>Only if the signature passes does the server capture the payment in PayPal.</li>
+          <li>Only if the signature passes does the server take the payment through PayPal.</li>
         </ol>
       </div>
       <div className="card">
         <h2>Where the AI is</h2>
         <ul className="muted small" style={{ paddingLeft: 18 }}>
+          <li>
+            <strong>AI cashier (Google Gemini):</strong> reads a counter photo or a spoken order and matches it to the shop's
+            catalog. It only picks items and quantities: prices come from the catalog, and the cashier confirms the bill.
+          </li>
+          <li>
+            <strong>Risk reasons (Google Gemini):</strong> rewrites why a payment needs a stricter check in plain words. The
+            decision itself never comes from Gemini.
+          </li>
           <li>
             <strong>Gesture match:</strong> dynamic time warping against your enrolled repetitions
             {config?.neural_model ? ', fused with a Siamese 1D CNN embedding' : ''}, with a threshold learned from your
@@ -52,7 +60,8 @@ export default function How() {
         <p className="muted small">
           A motion signature is a behavioral biometric: one factor, not a replacement for Face ID. A close observer
           might copy a simple gesture, and signing while walking is harder. This prototype runs on the PayPal sandbox
-          and makes no compliance claims.
+          and makes no compliance claims. Photos and typed orders go to Google Gemini; motion data, names and locations
+          never do.
         </p>
       </div>
       <Link to="/" className="btn block">

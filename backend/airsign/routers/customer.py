@@ -13,10 +13,12 @@ from ..auth import SESSION_COOKIE, customer, optional_customer, start_session
 from ..config import get_settings
 from ..db import get_db
 from ..models import Device, EnrollmentSession, PaymentHistory, SignatureTemplate, User, now
+from ..wallets import active_wallet, forget_wallet
 from ..paypal.gateway import get_gateway
 from ..ratelimit import rate_limit
 from ..seed import seed_history
 from ..signal import enroll as enrollment
+from ..ai import gemini
 from ..signal import pipeline
 from ..signal.siamese import get_model
 
@@ -39,6 +41,7 @@ def config():
         "allow_simulation": s.allow_simulation,
         "currency": s.currency,
         "neural_model": get_model() is not None,
+        "gemini": gemini.enabled(),
     }
 
 
@@ -74,6 +77,7 @@ def logout(response: Response):
 def me_view(db: Session, user: User, device: Device) -> dict:
     tpl = db.get(SignatureTemplate, user.id)
     es = db.get(EnrollmentSession, user.id)
+    wallet = active_wallet(db, user.id)
     synthetic = db.scalar(
         select(func.count()).select_from(PaymentHistory).where(PaymentHistory.user_id == user.id, PaymentHistory.synthetic.is_(True))
     )
@@ -85,6 +89,7 @@ def me_view(db: Session, user: User, device: Device) -> dict:
         else {"repetitions": tpl.n_reps, "method": tpl.method, "simulated": tpl.simulated, "created_at": tpl.created_at},
         "enrollment": None if es is None else {"accepted": es.accepted, "rejected": es.rejected, "simulated": es.simulated},
         "synthetic_history": synthetic,
+        "wallet": None if wallet is None else {"status": wallet.status, "email": wallet.payer_email},
     }
 
 
@@ -125,6 +130,7 @@ def demo_history(body: HistoryIn, session=Depends(customer), db: Session = Depen
 def delete_me(response: Response, session=Depends(customer), db: Session = Depends(get_db)):
     user, _ = session
     biometrics.delete_signature(db, user.id)
+    forget_wallet(db, user.id)
     audit(db, user.id, "user.deleted")
     db.delete(user)
     db.commit()

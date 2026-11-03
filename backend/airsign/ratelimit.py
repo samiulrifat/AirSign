@@ -41,6 +41,9 @@ RULES = {
     "lab_login": Rule("lab_login", 10, 600, per_user=False),
     "lab_summary": Rule("lab_summary", 6, 600, per_user=False),
     "sim": Rule("sim", 120, 600),
+    "ai_bill": Rule("ai_bill", 30, 600, per_user=False),
+    "bills": Rule("bills", 300, 600),
+    "wallet": Rule("wallet", 20, 600),
 }
 
 

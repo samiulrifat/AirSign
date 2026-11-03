@@ -36,6 +36,7 @@ export type Config = {
   allow_simulation: boolean
   currency: string
   neural_model: boolean
+  gemini: boolean
 }
 
 export type Me = {
@@ -44,6 +45,7 @@ export type Me = {
   signature?: { repetitions: number; method: string; simulated: boolean; created_at: string } | null
   enrollment?: { accepted: number; rejected: number; simulated: boolean } | null
   synthetic_history?: number
+  wallet?: { status: string; email: string | null } | null
 }
 
 export type Shop = {
@@ -75,6 +77,7 @@ export type Risk = {
   tier: 1 | 2 | 3
   score: number
   explanation: string
+  explanation_source: 'gemini' | 'template'
   contributions: Record<string, number>
   ml_score: number | null
   history_is_synthetic: boolean
@@ -87,6 +90,8 @@ export type Intent = {
   shop: Shop
   amount_cents: number
   currency: string
+  funding: 'order' | 'wallet'
+  nonce?: string | null
   paypal: { mode: string; order_id: string | null; capture_id: string | null; webhook_confirmed: boolean }
   risk: Risk | null
   signatures_required: number
@@ -110,7 +115,9 @@ export type SignoffResult = {
   signatures_required: number
   nonce: string | null
   flags: string[]
-  match?: { z: number; k: number; method: string }
+  replay_flags?: string[]
+  sensor_flags?: string[]
+  match?: { z: number; k: number; method: string; z_dtw: number; z_nn: number | null }
   intent: Intent
 }
 

@@ -34,6 +34,55 @@ MERCHANTS = [
 ]
 
 
+# What each kind of shop sells. Bill prices always come from here, never from the AI.
+CATALOGS = {
+    "cafe": [
+        {"id": "flat-white", "name": "Flat white", "price": "4.80", "aliases": ["coffee", "latte"]},
+        {"id": "croissant", "name": "Croissant", "price": "3.60", "aliases": ["pastry"]},
+        {"id": "cold-brew", "name": "Cold brew", "price": "5.20", "aliases": ["iced coffee"]},
+        {"id": "sandwich", "name": "Sandwich", "price": "8.90", "aliases": []},
+        {"id": "tea", "name": "Tea", "price": "3.40", "aliases": []},
+        {"id": "muffin", "name": "Muffin", "price": "3.90", "aliases": []},
+    ],
+    "books": [
+        {"id": "paperback", "name": "Paperback", "price": "14.99", "aliases": ["book", "novel"]},
+        {"id": "hardcover", "name": "Hardcover", "price": "27.50", "aliases": ["hardback"]},
+        {"id": "notebook", "name": "Notebook", "price": "9.00", "aliases": ["journal"]},
+        {"id": "gift-card", "name": "Gift card", "price": "50.00", "aliases": []},
+        {"id": "pen", "name": "Pen", "price": "3.50", "aliases": []},
+        {"id": "bookmark", "name": "Bookmark", "price": "2.00", "aliases": []},
+    ],
+    "electronics": [
+        {"id": "screen-repair", "name": "Screen repair", "price": "189.00", "aliases": ["screen"]},
+        {"id": "battery-swap", "name": "Battery swap", "price": "79.00", "aliases": ["battery"]},
+        {"id": "charging-cable", "name": "Charging cable", "price": "19.00", "aliases": ["cable", "charger"]},
+        {"id": "case", "name": "Case", "price": "24.00", "aliases": ["cover"]},
+        {"id": "earphones", "name": "Earphones", "price": "35.00", "aliases": ["headphones", "earbuds"]},
+        {"id": "screen-protector", "name": "Screen protector", "price": "15.00", "aliases": []},
+    ],
+    "grocery": [
+        {"id": "fruit-box", "name": "Fruit box", "price": "12.40", "aliases": ["fruit", "apple", "banana"]},
+        {"id": "bread", "name": "Bread", "price": "4.20", "aliases": ["loaf"]},
+        {"id": "cheese", "name": "Cheese", "price": "9.75", "aliases": []},
+        {"id": "olive-oil", "name": "Olive oil", "price": "15.00", "aliases": ["oil"]},
+        {"id": "milk", "name": "Milk", "price": "3.10", "aliases": []},
+        {"id": "eggs", "name": "Eggs", "price": "5.60", "aliases": ["egg"]},
+    ],
+    "clothing": [
+        {"id": "t-shirt", "name": "T-shirt", "price": "25.00", "aliases": ["shirt", "tee"]},
+        {"id": "jacket", "name": "Jacket", "price": "140.00", "aliases": ["coat"]},
+        {"id": "socks", "name": "Socks", "price": "9.00", "aliases": ["sock"]},
+        {"id": "cap", "name": "Cap", "price": "22.00", "aliases": ["hat"]},
+        {"id": "scarf", "name": "Scarf", "price": "32.00", "aliases": []},
+        {"id": "belt", "name": "Belt", "price": "38.00", "aliases": []},
+    ],
+}
+
+
+def catalog_for(category: str) -> list[dict]:
+    return CATALOGS.get(category, CATALOGS["cafe"])
+
+
 def seed_shops(db: Session) -> None:
     for b in BUILDINGS:
         if db.get(Building, b["id"]) is None:

@@ -295,6 +295,7 @@ def test_capture_has_a_single_call_site():
     assert callers == [("intents.py", "result = get_gateway().capture_order(intent.paypal_order_id, intent.capture_request_id)")], callers
     intents_src = (src / "intents.py").read_text()
     assert intents_src.count("_capture(db, intent)") == 1  # called once, from signoff
+    assert "charge_saved_wallet(" in intents_src  # the saved-account path lives inside _capture too
 
 
 @pytest.mark.parametrize(

@@ -1,18 +1,129 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { get, post, type Invoice, type Shop } from '../lib/api'
-import { errorText, floorLabel, money } from '../lib/app'
+import { errorText, floorLabel, money, useApp } from '../lib/app'
 import { SimBadge, Spinner, TopBar } from '../components/bits'
 
 type PosInvoice = Invoice & { payment: { state: string; tier: number | null; simulated: boolean; webhook_confirmed: boolean } | null }
 type Line = { name: string; qty: number; price: string }
 
-const PRESETS: Record<string, [string, string][]> = {
-  cafe: [['Flat white', '4.80'], ['Croissant', '3.60'], ['Cold brew', '5.20'], ['Sandwich', '8.90']],
-  books: [['Paperback', '14.99'], ['Hardcover', '27.50'], ['Notebook', '9.00'], ['Gift card', '50.00']],
-  electronics: [['Screen repair', '189.00'], ['Battery swap', '79.00'], ['Charging cable', '19.00'], ['Case', '24.00']],
-  grocery: [['Fruit box', '12.40'], ['Bread', '4.20'], ['Cheese', '9.75'], ['Olive oil', '15.00']],
-  clothing: [['T-shirt', '25.00'], ['Jacket', '140.00'], ['Socks', '9.00'], ['Cap', '22.00']],
+type Draft = { lines: Line[]; unmatched: string[]; source: 'gemini' | 'keywords' }
+type CatalogItem = { name: string; price: string }
+
+const PHOTO_MAX_PX = 1024
+
+/** Shrink a photo before upload: small enough to send quickly, sharp enough to read the items. */
+async function shrinkPhoto(file: File): Promise<string> {
+  const bitmap = await createImageBitmap(file)
+  const scale = Math.min(1, PHOTO_MAX_PX / Math.max(bitmap.width, bitmap.height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.round(bitmap.width * scale)
+  canvas.height = Math.round(bitmap.height * scale)
+  canvas.getContext('2d')?.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+  bitmap.close()
+  return canvas.toDataURL('image/jpeg', 0.8)
+}
+
+type SpeechResult = { results: { 0: { transcript: string } }[] }
+type Recognition = { lang: string; onresult: (e: SpeechResult) => void; onend: () => void; onerror: () => void; start: () => void }
+
+function speechRecognition(): (new () => Recognition) | undefined {
+  const w = window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition }
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition
+}
+
+function AiCashier({ onDraft }: { onDraft: (d: Draft) => void }) {
+  const { config } = useApp()
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const Speech = speechRecognition()
+
+  async function ask(body: { text?: string; image?: string }) {
+    setBusy(true)
+    setError(null)
+    try {
+      onDraft(await post<Draft>('/pos/ai-bill', body))
+      setText('')
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function photo(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    try {
+      await ask({ image: await shrinkPhoto(file) })
+    } catch {
+      setError('That photo could not be opened. Try another one.')
+    }
+  }
+
+  function listen() {
+    if (!Speech) return
+    const r = new Speech()
+    r.lang = navigator.language
+    r.onresult = (e) => void ask({ text: e.results[0][0].transcript })
+    r.onerror = () => setError('Could not hear that. Type the order instead.')
+    r.onend = () => setListening(false)
+    setError(null)
+    setListening(true)
+    r.start()
+  }
+
+  return (
+    <div className="ai-box">
+      <div className="row between">
+        <h3 style={{ margin: 0 }}>AI cashier</h3>
+        <span className="badge accent">{config?.gemini ? 'Google Gemini' : 'Keyword match'}</span>
+      </div>
+      <form
+        className="row"
+        style={{ marginTop: 10 }}
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (text.trim()) void ask({ text })
+        }}
+      >
+        <input
+          type="text"
+          aria-label="Describe the order"
+          maxLength={300}
+          value={text}
+          placeholder="Two paperbacks and a notebook"
+          onChange={(e) => setText(e.target.value)}
+          style={{ flex: 1, minWidth: 0 }}
+        />
+        <button className="btn small" disabled={busy || !text.trim()}>
+          {busy ? <Spinner /> : 'Draft'}
+        </button>
+      </form>
+      <div className="grid2" style={{ marginTop: 8 }}>
+        {config?.gemini ? (
+          <label className={`btn quiet small${busy ? ' disabled' : ''}`}>
+            Snap the counter
+            <input type="file" accept="image/*" capture="environment" hidden disabled={busy} onChange={photo} />
+          </label>
+        ) : (
+          <button className="btn quiet small" disabled title="Needs AIRSIGN_GEMINI_API_KEY on the server">
+            Photo needs Gemini
+          </button>
+        )}
+        {Speech && (
+          <button type="button" className="btn quiet small" disabled={busy || listening} onClick={listen}>
+            {listening ? 'Listening…' : 'Say the order'}
+          </button>
+        )}
+      </div>
+      {config?.gemini && <p className="tiny" style={{ marginTop: 8 }}>Photos and orders go to Google Gemini. Keep people out of the shot.</p>}
+      {error && <div className="notice warn" style={{ marginTop: 8 }}>{error}</div>}
+    </div>
+  )
 }
 
 function Login({ onLogin }: { onLogin: (s: Shop) => void }) {
@@ -60,11 +171,17 @@ function Login({ onLogin }: { onLogin: (s: Shop) => void }) {
   )
 }
 
-function NewInvoice({ shop, onCreated }: { shop: Shop; onCreated: (inv: Invoice) => void }) {
+function NewInvoice({ onCreated }: { onCreated: (inv: Invoice) => void }) {
+  const [catalog, setCatalog] = useState<CatalogItem[]>([])
+  const [draft, setDraft] = useState<Draft | null>(null)
   const [lines, setLines] = useState<Line[]>([])
   const [amount, setAmount] = useState('')
   const [error, setError] = useState<string | null>(null)
   const total = lines.reduce((t, l) => t + l.qty * Math.round(parseFloat(l.price) * 100), 0)
+
+  useEffect(() => {
+    get<CatalogItem[]>('/pos/catalog').then(setCatalog).catch(() => {})
+  }, [])
 
   function add(name: string, price: string) {
     setLines((ls) => {
@@ -81,6 +198,7 @@ function NewInvoice({ shop, onCreated }: { shop: Shop; onCreated: (inv: Invoice)
       onCreated(await post<Invoice>('/pos/invoices', body))
       setLines([])
       setAmount('')
+      setDraft(null)
     } catch (e) {
       setError(errorText(e))
     }
@@ -89,8 +207,20 @@ function NewInvoice({ shop, onCreated }: { shop: Shop; onCreated: (inv: Invoice)
   return (
     <div className="card">
       <h2>New bill</h2>
+      <AiCashier
+        onDraft={(d) => {
+          setDraft(d)
+          setLines(d.lines)
+        }}
+      />
+      {draft && (
+        <div className={`notice ${draft.lines.length ? 'ok' : 'warn'}`} style={{ marginBottom: 12 }}>
+          {draft.lines.length ? `${draft.source === 'gemini' ? 'Drafted by Gemini' : 'Drafted by keyword match'}. Check it before creating the bill.` : 'Nothing matched this shop’s items.'}
+          {draft.unmatched.length > 0 && <div className="tiny">Not in your catalog: {draft.unmatched.join(', ')}</div>}
+        </div>
+      )}
       <div className="grid2" style={{ marginBottom: 12 }}>
-        {(PRESETS[shop.category] ?? PRESETS.cafe).map(([name, price]) => (
+        {catalog.map(({ name, price }) => (
           <button key={name} className="btn quiet small" onClick={() => add(name, price)}>
             {name} · {price}
           </button>
@@ -172,7 +302,7 @@ function CheckinPanel({ invoice }: { invoice: PosInvoice }) {
       ) : (
         <>
           {p && <div className="notice warn">Customer is paying: {p.state.toLowerCase()}</div>}
-          <p className="small muted">Customer: scan to check in at this counter, or type the code.</p>
+          <p className="small muted">Phones here with bill alerts on have been alerted. Or scan to check in, or type the code.</p>
           <div className="qr">
             <canvas ref={canvas} />
           </div>
@@ -237,7 +367,6 @@ export default function Pos() {
           <div className="pos-grid">
             <div>
               <NewInvoice
-                shop={shop}
                 onCreated={(inv) => {
                   setSelected(inv.id)
                   load()

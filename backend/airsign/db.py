@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import DATA_DIR, get_settings
@@ -56,3 +56,7 @@ def init_db() -> None:
     from . import models  # noqa: F401  (registers tables)
 
     Base.metadata.create_all(engine)
+    # create_all never changes a table that already exists, such as on a deployed database.
+    if "funding" not in {c["name"] for c in inspect(engine).get_columns("payment_intents")}:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE payment_intents ADD COLUMN funding VARCHAR(8) DEFAULT 'order'"))
