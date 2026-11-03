@@ -3,7 +3,7 @@ import { Link, Navigate } from 'react-router-dom'
 import { get, post, type Me, type Recording } from '../lib/api'
 import { errorText, useApp } from '../lib/app'
 import { computeInk, type Ink } from '../lib/ink'
-import { CheckIcon, SimBadge, Spinner, TopBar } from '../components/bits'
+import { CheckIcon, DemoControls, SimBadge, Spinner, TopBar } from '../components/bits'
 import { AirSignPad, InkCanvas, useMotion } from '../components/AirSignPad'
 
 const TARGET = 7
@@ -114,28 +114,24 @@ export default function Enroll() {
       {mode === 'choose' && (
         <div className="card">
           <h1>Your air signature</h1>
-          <p className="muted">
-            Choose a movement that is personal and not too simple, for example writing your initials in the air with the
-            phone. It should take 2 to 4 seconds.
-          </p>
+          <p className="muted">Write your initials in the air with your phone. Make it personal, and take 2 to 4 seconds.</p>
           <ol className="muted small" style={{ paddingLeft: 18 }}>
-            <li>Hold the phone still until the pad turns green.</li>
-            <li>Sign in the air, then hold still. No need to touch the screen.</li>
-            <li>Repeat {TARGET} times, the same way each time. The next one starts by itself.</li>
+            <li>Hold still until the pad turns green.</li>
+            <li>Sign in the air, then hold still.</li>
+            <li>Repeat {TARGET} times, the same way each time.</li>
           </ol>
           {error && <div className="notice bad">{error}</div>}
           <button className="btn block" disabled={busy} onClick={() => begin(false)}>
             Record with this phone
           </button>
-          {config?.allow_simulation && (
-            <>
-              <div className="spacer" />
-              <button className="btn sim block" disabled={busy} onClick={() => begin(true)}>
-                No phone? Use a simulated signature
-              </button>
-            </>
-          )}
         </div>
+      )}
+      {mode === 'choose' && config?.allow_simulation && (
+        <DemoControls>
+          <button className="btn sim block" disabled={busy} onClick={() => begin(true)}>
+            No phone? Use a simulated signature
+          </button>
+        </DemoControls>
       )}
 
       {(mode === 'real' || mode === 'sim') && (

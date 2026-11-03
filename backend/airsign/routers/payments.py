@@ -43,6 +43,7 @@ def intent_view(db: Session, intent: PaymentIntent) -> dict:
         "shop": shop_view(merchant),
         "amount_cents": intent.amount_cents,
         "currency": intent.currency,
+        "funding": intent.funding,
         "paypal": {"mode": get_gateway().mode, "order_id": intent.paypal_order_id, "capture_id": intent.capture_id, "webhook_confirmed": intent.webhook_confirmed},
         "risk": None
         if intent.risk_tier is None
@@ -50,6 +51,7 @@ def intent_view(db: Session, intent: PaymentIntent) -> dict:
             "tier": intent.risk_tier,
             "score": intent.risk_score,
             "explanation": risk.get("explanation"),
+            "explanation_source": risk.get("explanation_source", "template"),
             "contributions": risk.get("contributions"),
             "ml_score": risk.get("ml_score"),
             "history_is_synthetic": risk.get("history_is_synthetic"),
@@ -86,7 +88,7 @@ class Location(BaseModel):
 
 class IntentIn(BaseModel):
     invoice_id: str
-    confirmed_by: str = Field(pattern="^(popup|list|code|qr)$")
+    confirmed_by: str = Field(pattern="^(popup|list|code|qr|sent)$")
     location: Location | None = None
     simulated_location: bool = False
     checkin_pass: str | None = None
@@ -99,7 +101,7 @@ def create_intent(body: IntentIn, session=Depends(customer), db: Session = Depen
     if invoice is None:
         fail("not_found", "Invoice not found.", 404)
     verified = checkin_pass_valid(body.checkin_pass, user.id, invoice.merchant_id)
-    intent = run(
+    intent, nonce = run(
         svc.create_intent,
         db,
         user,
@@ -110,7 +112,7 @@ def create_intent(body: IntentIn, session=Depends(customer), db: Session = Depen
         location_verified=verified,
         simulated=body.simulated_location,
     )
-    return intent_view(db, intent)
+    return {**intent_view(db, intent), "nonce": nonce}
 
 
 @router.get("/intents")

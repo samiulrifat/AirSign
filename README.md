@@ -1,6 +1,6 @@
 # AirSign
 
-**Pay in a shop with a move of your phone.** AirSign works out which shop you are in, you approve the payment in PayPal, and you confirm it by moving your phone in a personal *air signature*, recorded by the phone's gyroscope and accelerometer. AI models check the motion, catch replays and fake sensor data, and decide how strict the check should be. Only a passing signature lets the server capture the payment through PayPal.
+**Pay in a shop with a move of your phone.** The cashier snaps a photo of the items or says the order, and **Google Gemini** drafts the bill. Your phone alerts you, and you confirm by moving it in a personal *air signature*, recorded by its gyroscope and accelerometer. Save your **PayPal** account once with **PayPal Vault**, and the air signature is all a normal payment needs. AI models check the motion, catch replays and fake sensor data, and decide how strict the check should be. Only a passing signature lets the server take the payment through PayPal.
 
 No card, no PIN, no terminal: just a mobile browser. Built for the PayPal x AI hackathon *Build What's Next with PayPal and AI*. Everything runs on the **PayPal sandbox**, and no real money moves.
 
@@ -10,9 +10,11 @@ No card, no PIN, no terminal: just a mobile browser. Built for the PayPal x AI h
 
 1. Open the app on a phone (HTTPS is needed for motion sensors and location; see [Run on a phone](#run-on-a-phone)).
 2. Enter a name, give consent, and **set up your air signature**: 7 repetitions of a 2–4 second gesture, like your initials drawn in the air.
-3. On a second screen (laptop), open **`/pos`**, pick **Lumen Books**, PIN **`1234`**, and create a bill.
-4. On the phone tap **Pay in a shop** → *Find my shop* (or a simulated location) → **"Are you at Lumen Books, 4th floor?"** → approve in PayPal → **hold the phone still until the pad turns green, sign in the air, hold still again**. No need to touch the screen.
-5. The receipt appears, and the cashier screen flips to *Paid*. The PayPal webhook confirms it a moment later.
+3. Tap **Save my PayPal** once, then **I'm at a shop**. Your name and a short code appear on the phone.
+4. On a second screen (laptop), open **`/pos`**, pick **Lumen Books**, PIN **`1234`**. Say or type the order (or snap a photo, with a Gemini key), and create the bill.
+5. Send it: in **Person** mode tap your name. In **AI auto** mode the till asks your name out loud; answer it, or type it.
+6. The phone buzzes. Tap **Sign to pay**, wait for green, and sign in the air.
+7. The receipt shows your signature and what the AI checked, and the cashier screen flips to *Paid*. The PayPal webhook confirms it a moment later.
 
 **No phone, or not in the shop?** Simulation mode is built in and clearly labeled:
 - *Simulated location*: "I am in Meridian Arcade", or "Place this building here" to move a demo building to where you stand.
@@ -32,6 +34,30 @@ Things to try:
 | "Generated sensor data" | Rejected: no sensor noise, perfectly regular timestamps |
 | Three wrong signatures | The payment intent locks |
 | Two bills open in one building | The popup won't guess and shows the shop list instead |
+
+## The cashier's two modes
+
+Customers tap **I'm at a shop**, and appear on the cashier's screen with their first name and a short code. The bill then goes to one phone, so nobody else sees it or can pay it:
+
+- **Person:** the cashier asks the name and taps it in the list.
+- **AI auto:** the till asks out loud, hears the name, and sends the bill on one clear match, allowing for spellings like Rahim and Raheem. Same names or unclear answers go back to the cashier with the likely people listed.
+
+**Alert everyone nearby** is the fallback for when no name matches. Those phones see only "A bill is ready at Lumen Books" until someone opens it. The QR code and six-digit code still work without alerts.
+
+Location finds the building, not the floor, so the list can include people on other floors. That's why it says *nearby* and shows a code to check against the phone. Presence stores the building and the code, never a position, and disappears within 45 seconds of the phone going quiet.
+
+## Keys to set
+
+The app runs with none of these (mock PayPal, keyword bills), so judges and teammates can always start it. Put them in `.env` at the repo root when running locally, or under **Environment** on the Render service. Never commit them.
+
+| Variable | Where to get it | What it turns on |
+|---|---|---|
+| `AIRSIGN_GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey) → *Create API key* (free tier works) | Photo bills, Gemini-read orders, Gemini-worded risk reasons |
+| `AIRSIGN_PAYPAL_MODE` | Set to `sandbox` | Real PayPal sandbox instead of the built-in mock |
+| `AIRSIGN_PAYPAL_CLIENT_ID`, `AIRSIGN_PAYPAL_CLIENT_SECRET` | [PayPal Developer Dashboard](https://developer.paypal.com/dashboard/) → *Apps & Credentials* → your sandbox app | PayPal sandbox |
+| `AIRSIGN_PAYPAL_WEBHOOK_ID` | Same app → *Sandbox Webhooks* (see [Use the PayPal sandbox](#use-the-paypal-sandbox)) | Webhook confirmation on the receipt |
+
+The Gemini models default to `gemini-3.8-flash` for reading orders, falling back to `gemini-3.5-flash-lite`, which also writes the risk reasons. `AIRSIGN_GEMINI_MODEL` and `AIRSIGN_GEMINI_FAST_MODEL` change them. Current free limits are on the [AI Studio rate-limit page](https://aistudio.google.com/rate-limit). On the free tier Google may use requests to improve its products, so AirSign sends only shop items, orders, counter photos and computed risk reasons: never motion data, signature templates, customer names or locations. In AI auto mode the browser's own speech recognition hears the name, and browsers such as Chrome send that audio to their maker to transcribe it.
 
 ## Run locally
 
@@ -134,6 +160,7 @@ These numbers demonstrate the pipeline, not real-world accuracy. Real numbers co
    AIRSIGN_PAYPAL_WEBHOOK_ID=...
    ```
 4. Approve payments with a sandbox **personal** (buyer) account.
+5. For **Save my PayPal**: in your app's *Sandbox App Settings* → *App Feature Options*, enable *Accept payments*, open *Advanced options*, and confirm **Vault** is selected. PayPal's docs also say saving PayPal needs reference-transaction approval on the account. If PayPal refuses, the app says so, and payments keep working with one PayPal approval each.
 
 Never commit `.env`.
 
@@ -146,20 +173,23 @@ Customer phone ◀──API──▶ │ intent state machine · PayPal client �
                          └────────────────────────────────────────────────────────────┘     webhooks
 ```
 
-1. **Invoice.** The cashier creates a bill. Amount and recipient are stored on the server, and the phone never supplies them.
-2. **Shop detection.** Browser location finds the *building*; the shop ranker picks the *shop* (shops on floors 3, 4 and 5 share coordinates). The customer confirms, picks from the list, or types the counter's rotating code.
-3. **PayPal approval.** The server creates an Orders v2 order (intent `CAPTURE`). The buyer approves with the **PayPal JavaScript SDK v6**, and the server checks the approval and amount with PayPal. Nothing is captured yet.
+1. **Invoice.** The cashier taps items, or lets the AI cashier draft them from a photo or a spoken order, and confirms. Amount and recipient are stored on the server, and the phone never supplies them.
+2. **Sending the bill or shop detection.** A customer who tapped *I'm at a shop* gets the bill on their phone once the cashier picks them, or the till matches their spoken name. Otherwise browser location finds the *building* and the shop ranker picks the *shop* (shops on floors 3, 4 and 5 share coordinates); the customer confirms, picks from the list, or types the counter's rotating code.
+3. **PayPal.** With a saved account (PayPal Vault) and a bill up to $200, this step is skipped: no PayPal order exists yet, because creating one with a saved account captures it at once. Otherwise the server creates an Orders v2 order (intent `CAPTURE`), the buyer approves with the **PayPal JavaScript SDK v6**, and the server checks the approval and amount with PayPal. Nothing is captured yet.
 4. **Risk tier and nonce.** The risk engine picks tier 1, 2 or 3, and the server issues a 128-bit single-use nonce valid for 120 s.
 5. **Sign in the air, hands-free.** Hold the phone still: the pad turns green, buzzes and plays a tone where the browser allows it. Moving the phone starts the recording, and holding still again ends it; the half-second of stillness before the first stroke is kept, because the server measures the sensor noise there. The signature appears as pen ink, reconstructed from the phone's in-plane movement (accelerometer) and wrist rotation (gyroscope), with a short Redo window before it is sent. Twitches that are too short or weak to be a signature are discarded without using up an attempt. The ink is only a picture for the person; the verifier works on the raw sensor data.
 6. **Verify.** Preprocess, then score against the template, then run the replay and sensor checks, which gives ACCEPT, STEP_UP or REJECT.
-7. **Capture.** Only a VERIFIED intent is captured, with a `PayPal-Request-Id` idempotency key. The receipt comes from the capture response, and the `PAYMENT.CAPTURE.COMPLETED` webhook (signature verified with PayPal) reconciles it.
+7. **Capture.** Only a VERIFIED intent takes money: the approved order is captured, or the saved account is charged, with a `PayPal-Request-Id` idempotency key either way. The receipt comes from PayPal's response, and the `PAYMENT.CAPTURE.COMPLETED` webhook (signature verified with PayPal) reconciles it.
 
-**The one rule:** the only code path that can capture money is a passing sign-off (`backend/airsign/intents.py::_capture`, called only from `signoff`). A test enforces it.
+**The one rule:** the only code path that can move money is a passing sign-off (`backend/airsign/intents.py::_capture`, called only from `signoff`). Tests enforce it for both the capture and the saved-account charge.
 
 ### Where the AI is
 
 | Component | What it does | Code |
 |---|---|---|
+| **AI cashier (Gemini)** | Reads a counter photo or a typed or spoken order with structured output, and picks catalog items and quantities. It cannot set prices or invent items: the server drops unknown ids and takes prices from the catalog, and the cashier confirms every draft. Typed orders fall back to a keyword match without Gemini. | `ai/cashier.py`, `ai/gemini.py` |
+| **Name matching** | Matches a spoken name to the customers nearby, by spelling and by consonants, and sends only on one clear match. It runs on our server, so names never go to Gemini. | `ai/names.py` |
+| **Risk reasons (Gemini)** | Rewrites why a payment needs a stricter check in plain words, from the reasons the risk engine already computed. The decision is committed first and never depends on Gemini, and any failure keeps the template sentence. | `ai/explain.py` |
 | **Gesture match** | 6-channel IMU signal → resample to 50 Hz → 10 Hz Butterworth (zero-phase) → segmentation → per-channel z-norm. Dynamic Time Warping (Sakoe-Chiba band) against the enrolled repetitions; a personal threshold learned from the user's own variation. A Siamese 1D CNN (NumPy inference) fuses in when trained weights are present. | `signal/pipeline.py`, `dtw.py`, `enroll.py`, `verify.py`, `siamese.py` |
 | **Replay and fake-data check** | Near-exact match against enrollment and earlier accepted signatures (compact encrypted fingerprints, not raw data); sensor-plausibility features: high-frequency noise floor, timestamp jitter, autocorrelation, cross-channel coherence, declared vs measured rate. | `signal/replay.py`, `fingerprint.py` |
 | **Risk engine** | Transparent weighted rules (amount vs your median, new shop, unusual hour, velocity, distance, new device), plus an **isolation forest** on your own history, calibrated to your history's quantiles. Template-built explanation sentences, so the model cannot invent reasons. | `risk.py` |
@@ -194,8 +224,10 @@ We found these while building, and the code comments explain each one:
 ```
 backend/airsign/
   signal/      pipeline, DTW, enrollment, verification, replay checks, Siamese inference, synthesizer
-  paypal/      PayPal gateway: sandbox (official Python Server SDK) and mock
-  routers/     API: customer, shops, payments, POS, simulation
+  ai/          Gemini client, AI cashier, risk-reason wording
+  paypal/      PayPal gateway: sandbox (official Python Server SDK, Vault over REST) and mock
+  routers/     API: customer, shops, presence, payments, POS, saved PayPal, simulation
+  presence.py  who is nearby: customers with "I'm at a shop" on, for the cashier's list
   intents.py   payment state machine and the single capture path
   risk.py      risk engine      shops.py  shop ranking      security.py  crypto
   evaluation.py  FAR/FRR/EER, replay and sensor-check rates with 95% intervals
@@ -212,7 +244,9 @@ Dockerfile, render.yaml, .github/workflows/  free deployment, keep-alive, CI
 
 | Tool | How we used it |
 |---|---|
+| **Google Gemini API** (`gemini-3.8-flash`, `gemini-3.5-flash-lite`) | AI cashier (photo and order to draft bill) and plain-language risk reasons |
 | **PayPal Orders API v2** | Create, verify approval of and capture the order for each in-store bill; idempotent capture with `PayPal-Request-Id` |
+| **PayPal Vault** (Payment Method Tokens v3) | Save a PayPal account once, then charge it with `vault_id` only after a passing air signature |
 | **PayPal Python Server SDK** (`paypal-server-sdk`) | Server-side Orders calls in sandbox mode |
 | **PayPal JavaScript SDK v6** | Buyer approval (`createPayPalOneTimePaymentSession`) for the server-created order |
 | **PayPal Webhooks** | `PAYMENT.CAPTURE.COMPLETED` / `DENIED`, verified with `verify-webhook-signature` |

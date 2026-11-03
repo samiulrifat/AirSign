@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..audit import audit
@@ -49,6 +49,15 @@ def buildings(db: Session = Depends(get_db)):
     return out
 
 
+def _nearest_building(db: Session, lat: float, lon: float, accuracy: float) -> tuple[float, Building] | None:
+    best = None
+    for b in db.scalars(select(Building)):
+        d = haversine_m(lat, lon, b.lat, b.lon)
+        if d <= b.radius_m + accuracy and (best is None or d < best[0]):
+            best = (d, b)
+    return best
+
+
 @router.get("/shops/nearby")
 def nearby(
     lat: float = Query(ge=-90, le=90),
@@ -63,11 +72,7 @@ def nearby(
     if accuracy > MAX_ACCURACY_M:
         return {"status": "low_accuracy", "message": "Your location is too approximate. Turn on precise location, or pick the shop from the list."}
 
-    best = None
-    for b in db.scalars(select(Building)):
-        d = haversine_m(lat, lon, b.lat, b.lon)
-        if d <= b.radius_m + accuracy and (best is None or d < best[0]):
-            best = (d, b)
+    best = _nearest_building(db, lat, lon, accuracy)
     if best is None:
         return {"status": "none", "message": "No AirSign shops near you."}
     building = best[1]
@@ -120,7 +125,12 @@ def open_invoices(shop_id: str, session=Depends(customer), db: Session = Depends
         fail("not_found", "Shop not found.", 404)
     rows = db.scalars(
         select(Invoice)
-        .where(Invoice.merchant_id == shop_id, Invoice.status == "OPEN", Invoice.created_at >= now() - LISTED_INVOICE_WINDOW)
+        .where(
+            Invoice.merchant_id == shop_id,
+            Invoice.status == "OPEN",
+            Invoice.created_at >= now() - LISTED_INVOICE_WINDOW,
+            or_(Invoice.customer_id.is_(None), Invoice.customer_id == session[0].id),
+        )
         .order_by(Invoice.created_at.desc())
     ).all()
     return {"shop": shop_view(merchant), "invoices": [invoice_view(i) for i in rows]}
@@ -174,7 +184,7 @@ def checkin(body: CheckinIn, session=Depends(customer), db: Session = Depends(ge
     db.commit()
     return {
         "shop": shop_view(merchant),
-        "invoice": invoice_view(invoice) if invoice and invoice.status == "OPEN" else None,
+        "invoice": invoice_view(invoice) if invoice and invoice.status == "OPEN" and invoice.customer_id in (None, user.id) else None,
         "checkin_pass": sign_value(f"{user.id}|{merchant.id}|{exp}", "checkin"),
     }
 

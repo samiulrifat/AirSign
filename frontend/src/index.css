@@ -1,48 +1,51 @@
 :root {
-  --bg: #f4f5f8;
+  /* Cheque paper and pen ink. --ink is blue-black; --accent is the ink a signature is written in. */
+  --bg: #f2f5f9;
   --surface: #ffffff;
-  --surface-2: #eef0f5;
-  --ink: #14161f;
-  --ink-2: #4a5063;
-  --ink-3: #7c8296;
-  --line: #dde0e8;
-  --accent: #0d9488;
+  --surface-2: #e9edf3;
+  --ink: #131a33;
+  --ink-2: #4b5470;
+  --ink-3: #6f7890;
+  --line: #d7dde8;
+  --accent: #1f35c4;
   --accent-ink: #ffffff;
-  --accent-soft: #ccfbf1;
-  --ok: #15803d;
-  --ok-soft: #dcfce7;
-  --warn: #b45309;
-  --warn-soft: #fef3c7;
-  --bad: #b91c1c;
-  --bad-soft: #fee2e2;
-  --sim: #7c3aed;
-  --sim-soft: #ede9fe;
-  --radius: 16px;
-  --shadow: 0 1px 2px rgb(20 22 31 / 6%), 0 8px 24px rgb(20 22 31 / 6%);
+  --accent-soft: #e3e7fb;
+  --ok: #0b7a55;
+  --ok-soft: #dcf3ea;
+  --warn: #93590a;
+  --warn-soft: #f8edd8;
+  --bad: #b92c2c;
+  --bad-soft: #fae3e1;
+  --sim: #6b4bb8;
+  --sim-soft: #ece7f8;
+  --radius: 14px;
+  --shadow: none;
+  --display: 'Familjen Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --body: 'Hanken Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'DM Mono', ui-monospace, 'Cascadia Mono', Menlo, monospace;
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0e1016;
-    --surface: #171a23;
-    --surface-2: #1f2330;
-    --ink: #eef0f6;
-    --ink-2: #b4b9c9;
-    --ink-3: #868ca0;
-    --line: #2a2f3d;
-    --accent: #2dd4bf;
-    --accent-ink: #062a26;
-    --accent-soft: #123b37;
-    --ok: #4ade80;
-    --ok-soft: #12321f;
-    --warn: #fbbf24;
-    --warn-soft: #3a2c0c;
-    --bad: #f87171;
-    --bad-soft: #3b1515;
-    --sim: #a78bfa;
-    --sim-soft: #2a1f47;
-    --shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 24px rgb(0 0 0 / 25%);
+    --bg: #0e1224;
+    --surface: #161b33;
+    --surface-2: #20264a;
+    --ink: #eef0fa;
+    --ink-2: #b6bcd6;
+    --ink-3: #8c93b0;
+    --line: #2c3358;
+    --accent: #9aa8ff;
+    --accent-ink: #0e1224;
+    --accent-soft: #252c5c;
+    --ok: #5fd3a8;
+    --ok-soft: #123429;
+    --warn: #e9bb6a;
+    --warn-soft: #382a10;
+    --bad: #f58f88;
+    --bad-soft: #3d1a1a;
+    --sim: #bca6f5;
+    --sim-soft: #2a2350;
     color-scheme: dark;
   }
 }
@@ -56,7 +59,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family: var(--body);
   font-size: 16px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
@@ -699,4 +702,467 @@ paypal-button {
 .pad.air .label {
   flex: none;
   padding: 8px 14px;
+}
+
+/* AI cashier, bill alerts and the signature checks */
+
+
+label.btn {
+  cursor: pointer;
+  text-align: center;
+}
+
+label.btn.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+
+.ai-checks {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 0.875rem;
+}
+
+.ai-checks .ok span {
+  color: var(--ok);
+}
+
+.ai-checks .bad span {
+  color: var(--bad);
+}
+
+/* Redesign: one action per screen, and the cheque's signature line as the signature element. */
+
+h1,
+h2,
+.amount,
+.brand {
+  font-family: var(--display);
+}
+
+h1 {
+  font-size: 1.85rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+h2 {
+  font-weight: 600;
+}
+
+.amount {
+  font-size: 3rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.brand svg rect {
+  display: none;
+}
+
+.btn {
+  min-height: 50px;
+  border-radius: 10px;
+}
+
+.btn.small {
+  min-height: 38px;
+  border-radius: 8px;
+}
+
+input[type='text'],
+input[type='password'],
+input[inputmode],
+select {
+  border-radius: 10px;
+}
+
+.card {
+  padding: 18px;
+}
+
+.eyebrow {
+  font-size: 0.85rem;
+  color: var(--ink-2);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hero {
+  padding: 20px 0 16px;
+}
+
+.hero .amount {
+  margin-bottom: 4px;
+}
+
+.hero .btn + .btn {
+  margin-top: 10px;
+}
+
+.hero .btn.quiet {
+  margin-top: 8px;
+}
+
+.bill-alert,
+.popup {
+  background: var(--surface);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin: 8px 0 16px;
+}
+
+.welcome {
+  padding: 28px 0 20px;
+}
+
+.welcome h1 {
+  font-size: 2.6rem;
+  line-height: 1.05;
+}
+
+.text-link {
+  display: block;
+  text-align: center;
+  padding: 14px 0 0;
+  font-size: 0.92rem;
+  color: var(--ink-2);
+}
+
+.you {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--display);
+  font-size: 2.2rem;
+  font-weight: 700;
+  margin: 10px 0 12px;
+  padding-bottom: 12px;
+  border-bottom: 1.5px solid var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.code-chip {
+  font-family: var(--mono);
+  font-size: 1rem;
+  font-weight: 500;
+  flex: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.you .code-chip {
+  font-size: 1.3rem;
+}
+
+.ready-row {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.settings-row {
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* Demo tools sit behind one fold, away from the product. */
+.demo {
+  border-top: 1px dashed var(--line);
+  margin-top: 8px;
+  padding: 12px 0;
+}
+
+.demo summary {
+  color: var(--sim);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.stepper {
+  list-style: none;
+  display: flex;
+  gap: 4px;
+  margin: 0 0 16px;
+  padding: 0;
+}
+
+.stepper li {
+  flex: 1;
+  min-width: 0;
+  padding-top: 7px;
+  font-size: 0.78rem;
+  color: var(--ink-3);
+  border-top: 3px solid var(--line);
+}
+
+.stepper li.done {
+  border-color: var(--accent);
+}
+
+.stepper li.now {
+  border-color: var(--accent);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* The signature element: a cheque's signature line, with the ink written just above it. */
+.sign-area {
+  margin-bottom: 8px;
+}
+
+.pad.air {
+  height: min(52vh, 400px);
+  min-height: 260px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.pad.air .label {
+  order: -1;
+  background: transparent;
+  padding: 4px 8px;
+}
+
+.pad.air::before {
+  content: '×';
+  position: absolute;
+  left: 16px;
+  bottom: 30px;
+  font-family: var(--display);
+  font-size: 1.25rem;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.pad.air::after {
+  content: '';
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 26px;
+  border-bottom: 1.5px solid var(--ink);
+}
+
+.pad.air canvas {
+  z-index: 1;
+}
+
+.pad.air.ready {
+  border-color: var(--ok);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 2px var(--ok);
+}
+
+.pad.air.recording {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.pad.air.small-pad,
+.pad.air.receipt-ink {
+  height: 120px;
+  min-height: 0;
+  margin: 8px 0 14px;
+}
+
+.receipt-ink {
+  border: 0 !important;
+  padding: 0 !important;
+}
+
+.receipt-ink::before {
+  left: 0;
+  bottom: 12px;
+}
+
+.receipt-ink::after {
+  left: 0;
+  right: 0;
+  bottom: 8px;
+}
+
+.sign-area .btn.ghost {
+  width: 100%;
+}
+
+/* Cashier screen */
+
+.till-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.till-head h1 {
+  margin: 0;
+}
+
+.till-head > div:first-child {
+  flex: 1;
+  min-width: 180px;
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.segmented button {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink-2);
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.segmented button.on {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.segmented button:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.order-input {
+  margin-bottom: 14px;
+}
+
+.order-input form input {
+  flex: 1;
+  min-width: 0;
+}
+
+.catalog {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.catalog .btn {
+  justify-content: space-between;
+  font-weight: 500;
+}
+
+.price {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--ink-2);
+}
+
+.bill-panel {
+  min-height: 320px;
+}
+
+@media (min-width: 860px) {
+  .pos-grid > div:last-child {
+    position: sticky;
+    top: 16px;
+  }
+}
+
+.bill-panel .amount {
+  font-size: 3.6rem;
+  margin: 8px 0;
+}
+
+.bill-panel.empty {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.people .item {
+  cursor: pointer;
+}
+
+.people .item:disabled {
+  opacity: 0.5;
+}
+
+.send-label {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sent-to {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 1.2rem;
+  margin: 16px 0 6px;
+}
+
+.voice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 72px;
+  font-family: var(--display);
+  font-size: 1.25rem;
+  font-weight: 600;
+  text-align: center;
+  border-radius: 10px;
+  background: var(--surface-2);
+  padding: 12px;
+}
+
+.voice.listening {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.fallbacks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+code,
+.code,
+.tiny code {
+  font-family: var(--mono);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .spinner {
+    transition: none;
+    animation-duration: 2s;
+  }
 }

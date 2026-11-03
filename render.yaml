@@ -21,6 +21,8 @@ services:
         value: "true"
       - key: AIRSIGN_ALLOW_SIMULATION
         value: "true"
+      - key: AIRSIGN_GEMINI_API_KEY
+        sync: false # from aistudio.google.com/apikey; empty turns the Gemini features off
       - key: AIRSIGN_PAYPAL_MODE
         value: mock # switch to sandbox once the credentials below are set
       - key: AIRSIGN_PAYPAL_CLIENT_ID

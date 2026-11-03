@@ -15,11 +15,13 @@ import {
 } from '../lib/api'
 import { errorText, floorLabel, money, useApp } from '../lib/app'
 import { prepareApproval, type ApprovalSession } from '../lib/paypal'
-import { CheckIcon, SimBadge, Spinner, TierBadge, TopBar } from '../components/bits'
-import { AirSignPad, useMotion } from '../components/AirSignPad'
+import { CheckIcon, DemoControls, SimBadge, Spinner, Stepper, TierBadge, TopBar } from '../components/bits'
+import { computeInk } from '../lib/ink'
+import type { BillStart } from '../components/BillAlerts'
+import { AirSignPad, InkCanvas, useMotion } from '../components/AirSignPad'
 
 type Loc = { lat: number; lon: number; accuracy: number; altitude?: number | null; altitude_accuracy?: number | null }
-type Found = { shop: Shop; how: 'popup' | 'list' | 'code' | 'qr'; checkinPass?: string; invoice?: Invoice | null }
+type Found = { shop: Shop; how: 'popup' | 'list' | 'code' | 'qr' | 'sent'; checkinPass?: string; invoice?: Invoice | null }
 
 export type CheckinState = { shop: Shop; invoice: Invoice | null; checkin_pass: string }
 
@@ -205,8 +207,7 @@ function FindShop({ onFound, onLocation }: { onFound: (f: Found) => void; onLoca
   return (
     <>
       <div className="card">
-        <h1>Pay in a shop</h1>
-        <p className="muted">AirSign uses your location once to find the building, then suggests the shop.</p>
+        <h1>Which shop are you in?</h1>
         {error && <div className="notice warn">{error}</div>}
         <button className="btn block" disabled={busy} onClick={findMe}>
           {busy ? <Spinner /> : 'Find my shop'}
@@ -233,25 +234,26 @@ function FindShop({ onFound, onLocation }: { onFound: (f: Found) => void; onLoca
           </button>
         </form>
         <hr className="sep" />
-        <p className="small muted">Or choose the building yourself:</p>
-        <div className="stack">
+        <details>
+          <summary>Choose the building yourself</summary>
+        <div className="stack" style={{ marginTop: 10 }}>
           {buildings.map((b) => (
             <button key={b.id} className="btn ghost block" onClick={() => { onLocation(null, false); setListFor(b.id) }}>
               {b.name}
             </button>
           ))}
         </div>
+        </details>
       </div>
       {config?.allow_simulation && (
-        <div className="sim-strip stack">
-          <h3>Simulated location</h3>
-          <p className="small muted">For testing away from the shops: pretend your phone reports a position inside a building.</p>
+        <DemoControls>
+          <p className="small muted">Pretend this phone is inside a building.</p>
           {buildings.map((b) => (
-            <button key={b.id} className="btn sim block" disabled={busy} onClick={() => simulateIn(b)}>
-              I am in {b.name}
+            <button key={b.id} className="btn sim small block" disabled={busy} onClick={() => simulateIn(b)}>
+              I'm in {b.name}
             </button>
           ))}
-        </div>
+        </DemoControls>
       )}
     </>
   )
@@ -335,6 +337,7 @@ function Summary({ intent }: { intent: Intent }) {
           {intent.shop.name} · {floorLabel(intent.shop.floor)}
         </span>
         <span className="row" style={{ gap: 6 }}>
+          {intent.funding === 'wallet' && <span className="badge accent">Saved PayPal</span>}
           {intent.location_verified && <span className="badge ok">At the counter</span>}
           {intent.simulated && <SimBadge />}
         </span>
@@ -430,9 +433,7 @@ function Approve({ intent, onApproved, onCancel }: { intent: Intent; onApproved:
   return (
     <div className="card">
       <h2>Approve with PayPal</h2>
-      <p className="muted small">
-        PayPal holds the approval. Nothing is charged until you sign in the air on the next screen.
-      </p>
+      <p className="muted small">Nothing is charged until you sign in the air.</p>
       {error && <div className="notice warn">{error}</div>}
       {config?.paypal_mode === 'sandbox' ? (
         sdkState === 'ready' && session ? (
@@ -452,7 +453,7 @@ function Approve({ intent, onApproved, onCancel }: { intent: Intent; onApproved:
         )
       ) : (
         <div className="sim-strip stack">
-          <h3>Mock PayPal approval</h3>
+          <h3>Mock PayPal</h3>
           <p className="small muted">
             PayPal sandbox credentials are not configured on this server, so a local stand-in plays PayPal's part. Order{' '}
             <code>{intent.paypal.order_id}</code>.
@@ -492,9 +493,29 @@ function MatchMeter({ z, k }: { z: number; k: number }) {
         <b style={{ left: `${th * 100}%` }} />
       </div>
       <p className="tiny" style={{ marginTop: 4 }}>
-        Distance from your enrolled signature: {z.toFixed(2)} (threshold {k.toFixed(1)}, in units of your own natural variation)
+        {ok ? 'Within your natural variation' : 'Outside your natural variation'}: score {z.toFixed(2)}, limit {k.toFixed(1)}
       </p>
     </div>
+  )
+}
+
+function AiChecks({ result }: { result: SignoffResult }) {
+  const m = result.match
+  if (!m) return null
+  const rows: [string, boolean][] = [
+    ...(m.z_nn !== null ? ([['Neural network match (Siamese CNN)', m.z_nn <= m.k]] as [string, boolean][]) : []),
+    ['Motion shape matches (DTW)', m.z_dtw <= m.k],
+    ['Real sensor data', !result.sensor_flags?.length],
+    ['Live, not a replay', !result.replay_flags?.length],
+  ]
+  return (
+    <ul className="ai-checks">
+      {rows.map(([label, ok]) => (
+        <li key={label} className={ok ? 'ok' : 'bad'}>
+          <span aria-hidden="true">{ok ? '✓' : '✕'}</span> {label}
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -502,7 +523,7 @@ function MatchMeter({ z, k }: { z: number; k: number }) {
 // the demo can replay an earlier payment's signature against a new payment.
 let lastRecording: Recording | null = null
 
-function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUpdate: (i: Intent, nonce: string | null) => void }) {
+function Sign({ intent, nonce, onUpdate, onResult, onCancel }: { intent: Intent; nonce: string; onUpdate: (i: Intent, nonce: string | null) => void; onResult: (r: SignoffResult) => void; onCancel: () => void }) {
   const { config } = useApp()
   const motion = useMotion()
   const [busy, setBusy] = useState(false)
@@ -531,6 +552,7 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
         setCanReplay(true)
       }
       setResult(r)
+      onResult(r)
       onUpdate(r.intent, r.nonce)
     } catch (e) {
       setError(errorText(e))
@@ -568,19 +590,17 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
 
   return (
     <>
-      {risk && (
-        <div className="card flat">
-          <div className="row between wrap">
-            <h3 style={{ margin: 0 }}>Security check</h3>
+      {risk && risk.tier > 1 && (
+        <div className="notice warn">
+          <div className="row between wrap" style={{ marginBottom: 4 }}>
             <TierBadge tier={risk.tier} />
+            {risk.explanation_source === 'gemini' && <span className="badge accent">Worded by Gemini</span>}
           </div>
-          <p className="small muted" style={{ margin: '8px 0 0' }}>
-            {risk.explanation}
-            {risk.history_is_synthetic && ' (compared with your synthetic demo history)'}
-          </p>
+          {risk.explanation}
+          {risk.history_is_synthetic && <div className="tiny">Compared with your made-up demo history.</div>}
         </div>
       )}
-      <div className="card">
+      <div className="sign-area">
         <div className="row between">
           <h2>Sign in the air</h2>
           <span className="tiny">
@@ -599,15 +619,18 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
           <div className={`notice ${decisionClass}`} style={{ marginTop: 12 }}>
             {result.reason}
             {result.flags.length > 0 && <div className="tiny">Flags: {result.flags.join(', ')}</div>}
+            <AiChecks result={result} />
             {result.match && <MatchMeter z={result.match.z} k={result.match.k} />}
           </div>
         )}
         {error && <div className="notice bad">{error}</div>}
+        <button className="btn ghost small" style={{ marginTop: 12 }} onClick={onCancel} disabled={busy}>
+          Not my bill, cancel
+        </button>
       </div>
       {config?.allow_simulation && (
-        <div className="sim-strip stack">
-          <h3>Simulated signer</h3>
-          <p className="small muted">Labeled synthetic recordings. They go through the same verifier and replay checks.</p>
+        <DemoControls>
+          <p className="small muted">Sign as someone else with labeled synthetic recordings. They go through the same checks.</p>
           <div className="grid2">
             {SIM_BUTTONS.map((b) => (
               <button key={b.kind} className="btn sim small" disabled={busy || (b.kind === 'replay' && !canReplay)} onClick={() => simulate(b.kind)}>
@@ -615,7 +638,7 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
               </button>
             ))}
           </div>
-        </div>
+        </DemoControls>
       )}
     </>
   )
@@ -623,8 +646,10 @@ function Sign({ intent, nonce, onUpdate }: { intent: Intent; nonce: string; onUp
 
 // Outcome ----------------------------------------------------------------------------
 
-function Outcome({ intent }: { intent: Intent }) {
+function Outcome({ intent, result }: { intent: Intent; result: SignoffResult | null }) {
   const [fresh, setFresh] = useState(intent)
+  // Shown only right after signing, from the recording still in memory. It is never stored.
+  const [ink] = useState(() => (result && lastRecording ? computeInk(lastRecording.samples, lastRecording.device.accel_includes_gravity) : null))
   useEffect(() => {
     setFresh(intent)
     if (intent.state !== 'COMPLETED' || intent.paypal.webhook_confirmed) return
@@ -647,8 +672,14 @@ function Outcome({ intent }: { intent: Intent }) {
         <p className="muted">
           {fresh.shop.name}, {floorLabel(fresh.shop.floor)}
         </p>
+        {ink && (
+          <div className="pad air review receipt-ink">
+            <InkCanvas ink={ink} />
+          </div>
+        )}
         <div className="row wrap" style={{ justifyContent: 'center', marginBottom: 12 }}>
           <span className="badge accent">PayPal {fresh.paypal.mode}</span>
+          {fresh.funding === 'wallet' && <span className="badge accent">Saved PayPal</span>}
           {fresh.paypal.webhook_confirmed ? <span className="badge ok">Webhook confirmed</span> : <span className="badge warn">Awaiting webhook</span>}
           {fresh.simulated && <SimBadge />}
         </div>
@@ -656,6 +687,13 @@ function Outcome({ intent }: { intent: Intent }) {
           Capture {fresh.paypal.capture_id} · order {fresh.paypal.order_id}
           {last?.latency_ms != null && ` · verified in ${Math.round(last.latency_ms)} ms`}
         </p>
+        {result?.match && (
+          <div className="notice" style={{ textAlign: 'left', marginBottom: 12 }}>
+            <strong className="small">What the AI checked</strong>
+            <AiChecks result={result} />
+            <MatchMeter z={result.match.z} k={result.match.k} />
+          </div>
+        )}
         <Link to="/" className="btn block">
           Done
         </Link>
@@ -689,16 +727,20 @@ export default function Pay() {
   const { me } = useApp()
   const { id } = useParams()
   const navigate = useNavigate()
-  const routerState = useLocation().state as { checkin?: CheckinState } | null
+  const routerState = useLocation().state as { checkin?: CheckinState; bill?: BillStart } | null
+  const bill = routerState?.bill
   const [found, setFound] = useState<Found | null>(
     routerState?.checkin
       ? { shop: routerState.checkin.shop, how: 'qr', checkinPass: routerState.checkin.checkin_pass, invoice: routerState.checkin.invoice }
-      : null,
+      : bill
+        ? { shop: bill.shop, how: bill.sent ? 'sent' : 'popup', invoice: bill.invoice }
+        : null,
   )
-  const [invoice, setInvoice] = useState<Invoice | null>(routerState?.checkin?.invoice ?? null)
-  const [loc, setLoc] = useState<{ loc: Loc | null; simulated: boolean }>({ loc: null, simulated: false })
+  const [invoice, setInvoice] = useState<Invoice | null>(routerState?.checkin?.invoice ?? bill?.invoice ?? null)
+  const [loc, setLoc] = useState<{ loc: Loc | null; simulated: boolean }>({ loc: bill?.location ?? null, simulated: bill?.simulated ?? false })
   const [intent, setIntent] = useState<Intent | null>(null)
   const [nonce, setNonce] = useState<string | null>(null)
+  const [lastResult, setLastResult] = useState<SignoffResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   // After the customer has gone back once, stop choosing the bill for them.
@@ -740,6 +782,7 @@ export default function Pay() {
     setBusy(true)
     setError(null)
     try {
+      // A saved PayPal account means the payment comes back ready to sign, with its nonce.
       const i = await post<Intent>('/intents', {
         invoice_id: invoice.id,
         confirmed_by: found.how,
@@ -748,6 +791,7 @@ export default function Pay() {
         checkin_pass: found.checkinPass ?? null,
       })
       setIntent(i)
+      if (i.nonce) setNonce(i.nonce)
       navigate(`/pay/${i.id}`, { replace: true })
     } catch (e) {
       setError(errorText(e))
@@ -791,11 +835,13 @@ export default function Pay() {
               setIntent(i)
               if (n) setNonce(n)
             }}
+            onResult={setLastResult}
+            onCancel={cancel}
           />
         </>
       )
     } else if (['COMPLETED', 'LOCKED', 'FAILED', 'EXPIRED', 'CANCELLED'].includes(intent.state)) {
-      body = <Outcome intent={intent} />
+      body = <Outcome intent={intent} result={lastResult} />
     } else {
       body = (
         <div className="card">
@@ -835,7 +881,7 @@ export default function Pay() {
           </>
         ) : (
           <div className="row">
-            <Spinner /> Opening PayPal…
+            <Spinner /> Getting your payment ready…
           </div>
         )}
         <button
@@ -853,9 +899,16 @@ export default function Pay() {
     )
   }
 
+  const steps = ['Shop', 'Bill', ...((intent ? intent.funding === 'wallet' : me?.wallet) ? [] : ['PayPal']), 'Sign', 'Paid']
+  const step = intent
+    ? intent.state === 'PROPOSED' ? 'PayPal' : intent.state === 'COMPLETED' ? 'Paid' : 'Sign'
+    : found ? 'Bill' : 'Shop'
+  const failed = intent && ['LOCKED', 'FAILED', 'EXPIRED', 'CANCELLED'].includes(intent.state)
+
   return (
     <div className="app">
       <TopBar />
+      {!failed && step !== 'Paid' && <Stepper steps={steps} current={step} />}
       {body}
     </div>
   )

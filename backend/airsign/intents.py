@@ -1,8 +1,9 @@
 """Payment intents: the state machine and the single path to money (sections 4.2, 9.1, 12).
 
-Design rule: `_capture` is the only function that calls PayPal capture. It is
-called only from `signoff`, and only after the intent reached VERIFIED inside
-the same request. Tests check that no other code path references the capture.
+Design rule: `_capture` is the only function that moves money through PayPal, by
+capturing an approved order or charging a saved account. It is called only from
+`signoff`, and only after the intent reached VERIFIED inside the same request.
+Tests check that no other code path references either call.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from . import biometrics
+from .ai.explain import explain_risk
 from .audit import audit
 from .config import get_settings
 from .models import Device, Invoice, Merchant, PaymentHistory, PaymentIntent, SignoffAttempt, User, WebhookEvent, now
@@ -25,17 +27,22 @@ from .shops import haversine_m
 from .signal import pipeline, replay, verify
 from .signal.fingerprint import fingerprint
 from .signal.siamese import get_model
+from .wallets import active_wallet
 
 INTENT_TTL = timedelta(minutes=10)
 NONCE_TTL = timedelta(seconds=120)
 MAX_ATTEMPTS = 3  # failed signatures before the intent locks (FR-10)
 MAX_SUBMISSIONS = 5  # all signatures, so tier 3 (two passes) still allows three failures
 SENSOR_FLAGS_TO_REJECT = 2
+# Above this a saved account is not enough and the buyer approves in PayPal again,
+# like the limit on contactless card payments.
+WALLET_LIMIT_CENTS = 20_000
 
 TERMINAL = {"COMPLETED", "LOCKED", "EXPIRED", "CANCELLED", "FAILED"}
 PRE_SIGNOFF = {"CREATED", "PROPOSED", "APPROVED", "ARMED"}
 TRANSITIONS = {
-    "CREATED": {"PROPOSED", "FAILED", "CANCELLED", "EXPIRED"},
+    # A saved account goes straight to APPROVED: the customer approved it when linking.
+    "CREATED": {"PROPOSED", "APPROVED", "FAILED", "CANCELLED", "EXPIRED"},
     "PROPOSED": {"APPROVED", "CANCELLED", "EXPIRED"},
     "APPROVED": {"ARMED", "CANCELLED", "EXPIRED"},
     "ARMED": {"SIGNING", "CANCELLED", "EXPIRED"},
@@ -105,11 +112,14 @@ def create_intent(
     location: dict | None,
     location_verified: bool,
     simulated: bool,
-) -> PaymentIntent:
+) -> tuple[PaymentIntent, str | None]:
+    """The new intent, and a nonce if a saved PayPal account means it is ready to sign."""
     if biometrics.load_template(db, user.id) is None:
         raise IntentError("not_enrolled", "Set up your air signature before paying.", 409)
     if invoice.status != "OPEN":
         raise IntentError("invoice_closed", "This invoice is no longer open.", 409)
+    if invoice.customer_id not in (None, user.id):
+        raise IntentError("not_your_bill", "The cashier sent this bill to someone else.", 403)
 
     active = db.scalars(
         select(PaymentIntent).where(PaymentIntent.invoice_id == invoice.id, PaymentIntent.state.not_in(tuple(TERMINAL)))
@@ -131,8 +141,10 @@ def create_intent(
         distance = haversine_m(location["lat"], location["lon"], merchant.lat, merchant.lon)
         accuracy = location.get("accuracy")
 
+    use_wallet = invoice.amount_cents <= WALLET_LIMIT_CENTS and active_wallet(db, user.id) is not None
     intent = PaymentIntent(
         invoice_id=invoice.id,
+        funding="wallet" if use_wallet else "order",
         user_id=user.id,
         device_id=device.id,
         merchant_id=merchant.id,
@@ -151,6 +163,11 @@ def create_intent(
     audit(db, user.id, "intent.created", intent.id, invoice=invoice.id, shop=merchant.id, confirmed_by=confirmed_by)
     db.commit()  # never hold a transaction open across a PayPal call
 
+    if use_wallet:
+        # No PayPal order yet: creating one with a saved account captures it at once.
+        transition(db, intent, "APPROVED", "vault")
+        return intent, _arm(db, intent, user, device)
+
     try:
         order = get_gateway().create_order(
             reference_id=invoice.id,
@@ -167,7 +184,7 @@ def create_intent(
     intent.paypal_order_id = order.id
     transition(db, intent, "PROPOSED", "paypal", order_id=order.id)
     db.commit()
-    return intent
+    return intent, None
 
 
 def confirm_approval(db: Session, intent: PaymentIntent, user: User, device: Device) -> str | None:
@@ -191,11 +208,25 @@ def confirm_approval(db: Session, intent: PaymentIntent, user: User, device: Dev
         raise IntentError("amount_mismatch", "The PayPal order does not match the invoice.", 409)
 
     transition(db, intent, "APPROVED", "paypal")
+    return _arm(db, intent, user, device)
+
+
+def _arm(db: Session, intent: PaymentIntent, user: User, device: Device) -> str:
     _score_risk(db, intent, user, device)
     transition(db, intent, "ARMED", "system", tier=intent.risk_tier)
     nonce = _issue_nonce(intent)
     db.commit()
+    _reword_risk(db, intent)
     return nonce
+
+
+def _reword_risk(db: Session, intent: PaymentIntent) -> None:
+    """Gemini rewords the reason after the decision is committed, with no transaction open."""
+    details = intent.risk_details or {}
+    sentence = explain_risk(intent.risk_tier, details.get("reasons") or [])
+    if sentence:
+        intent.risk_details = {**details, "explanation": sentence, "explanation_source": "gemini"}
+        db.commit()
 
 
 def _score_risk(db: Session, intent: PaymentIntent, user: User, device: Device) -> None:
@@ -231,6 +262,8 @@ def _score_risk(db: Session, intent: PaymentIntent, user: User, device: Device) 
         "features": result.features,
         "contributions": result.contributions,
         "explanation": result.explanation,
+        "explanation_source": "template",
+        "reasons": result.reasons,
         "history_is_synthetic": bool(rows) and not real_elsewhere,
     }
     audit(db, "risk", "intent.risk", intent.id, score=result.score, tier=result.tier, reasons=result.reasons)
@@ -257,6 +290,10 @@ def cancel(db: Session, intent: PaymentIntent, user: User) -> None:
     if intent.state not in PRE_SIGNOFF:
         raise IntentError("bad_state", "This payment can no longer be cancelled.", 409)
     transition(db, intent, "CANCELLED", user.id)
+    # A bill sent to this customer goes back to the cashier, who can send it to someone else.
+    invoice = db.get(Invoice, intent.invoice_id)
+    if invoice.customer_id == user.id:
+        invoice.customer_id = None
     db.commit()
 
 
@@ -388,7 +425,8 @@ def signoff(db: Session, intent_id: str, user: User, nonce: str, payload: dict) 
     if to == "VERIFIED":
         _capture(db, intent)
 
-    return _result(intent, decision, reason, nonce=new_nonce_value, scores=scores, k=k, flags=flags + sensor)
+    out = _result(intent, decision, reason, nonce=new_nonce_value, scores=scores, k=k, flags=flags + sensor)
+    return {**out, "replay_flags": flags, "sensor_flags": sensor}
 
 
 def _capture(db: Session, intent: PaymentIntent) -> None:
@@ -396,12 +434,33 @@ def _capture(db: Session, intent: PaymentIntent) -> None:
     if intent.state != "VERIFIED":
         raise IntentError("bad_state", "Only a verified payment can be captured.", 409)
     intent.capture_request_id = f"airsign-capture-{intent.id}"
+    wallet = active_wallet(db, intent.user_id) if intent.funding == "wallet" else None
+    merchant = db.get(Merchant, intent.merchant_id)
     transition(db, intent, "CAPTURING", "system")
     db.commit()
     try:
-        result = get_gateway().capture_order(intent.paypal_order_id, intent.capture_request_id)
+        if intent.funding != "wallet":
+            result = get_gateway().capture_order(intent.paypal_order_id, intent.capture_request_id)
+        elif wallet is None:
+            raise PayPalError("the saved account was removed")
+        else:
+            result = get_gateway().charge_saved_wallet(
+                payment_token=wallet.payment_token_id,
+                reference_id=intent.invoice_id,
+                invoice_id=intent.id,
+                amount=money(intent.amount_cents),
+                currency=intent.currency,
+                description=f"{merchant.name}, invoice {intent.invoice_id}",
+                request_id=intent.capture_request_id,
+            )
+            intent.paypal_order_id = result.order_id
     except PayPalError as e:
-        if e.issue == "INSTRUMENT_DECLINED":
+        if intent.funding == "wallet":
+            intent.failure_reason = (
+                "PayPal could not charge your saved PayPal account. Ask the cashier for a new bill. "
+                "To pay another way, remove the saved account on the home screen first."
+            )
+        elif e.issue == "INSTRUMENT_DECLINED":
             # Do not retry the same funding source: the buyer has to pick another one.
             intent.failure_reason = (
                 "PayPal declined the payment method. Ask the cashier for a new bill and choose "
@@ -418,7 +477,7 @@ def _capture(db: Session, intent: PaymentIntent) -> None:
     elif result.capture_status == "PENDING":
         audit(db, "paypal", "intent.capture_pending", intent.id)
     else:
-        intent.failure_reason = f"PayPal returned {result.capture_status}."
+        intent.failure_reason = f"PayPal returned {result.capture_status or result.order_status}."
         transition(db, intent, "FAILED", "paypal", capture_status=result.capture_status)
     db.commit()
 
@@ -446,7 +505,13 @@ def _result(intent: PaymentIntent, decision: str, reason: str, *, nonce=None, sc
     if scores is not None:
         # Shown in the demo so judges can see the model at work. A production
         # system would not return scores, since they help an attacker tune attempts.
-        out["match"] = {"z": round(scores.z, 3), "k": k, "method": scores.method}
+        out["match"] = {
+            "z": round(scores.z, 3),
+            "k": k,
+            "method": scores.method,
+            "z_dtw": round(scores.z_dtw, 3),
+            "z_nn": None if scores.z_nn is None else round(scores.z_nn, 3),
+        }
     return out
 
 

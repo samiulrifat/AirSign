@@ -47,6 +47,32 @@ export function TierBadge({ tier }: { tier: number }) {
   return <span className={`badge ${cls}`}>{text}</span>
 }
 
+// Phones get a clean flow, with the demo tools folded away. A laptop has no motion
+// sensors, so a judge on one needs them straight away.
+const NO_TOUCH = typeof navigator !== 'undefined' && navigator.maxTouchPoints === 0
+
+export function DemoControls({ children }: { children: ReactNode }) {
+  return (
+    <details className="demo" open={NO_TOUCH}>
+      <summary>Demo controls</summary>
+      <div className="stack">{children}</div>
+    </details>
+  )
+}
+
+export function Stepper({ steps, current }: { steps: string[]; current: string }) {
+  const at = steps.indexOf(current)
+  return (
+    <ol className="stepper" aria-label="Payment progress">
+      {steps.map((s, i) => (
+        <li key={s} className={i < at ? 'done' : i === at ? 'now' : ''} aria-current={i === at ? 'step' : undefined}>
+          {s}
+        </li>
+      ))}
+    </ol>
+  )
+}
+
 export function Spinner() {
   return <span className="spinner" aria-label="Loading" />
 }

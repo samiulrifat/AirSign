@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     paypal_client_secret: str = ""
     paypal_webhook_id: str = ""
 
+    # Gemini API key from aistudio.google.com. Empty turns the Gemini features off;
+    # typed bills then use a keyword match and risk reasons use their templates.
+    gemini_api_key: str = ""
+    # Reads photos and orders. If it is over quota or down, the fast model is tried.
+    gemini_model: str = "gemini-3.8-flash"
+    # Writes the risk sentences, where speed matters more.
+    gemini_fast_model: str = "gemini-3.5-flash-lite"
+
     # Lets judges generate labeled simulated gestures and locations.
     allow_simulation: bool = True
     # Set when served behind HTTPS so cookies are marked Secure.

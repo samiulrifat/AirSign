@@ -154,7 +154,7 @@ export function computeInk(rows: number[][], accelIncludesGravity = false): Ink 
 }
 
 export function inkColor(el: Element): string {
-  return getComputedStyle(el).getPropertyValue('--ink').trim() || '#14161f'
+  return getComputedStyle(el).getPropertyValue('--accent').trim() || '#1f35c4'
 }
 
 /**
