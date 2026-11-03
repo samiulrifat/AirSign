@@ -37,14 +37,14 @@ Things to try:
 
 ## The cashier's two modes
 
-Customers tap **I'm at a shop**, and appear on the cashier's screen with their first name and a short code. The bill then goes to one phone, so nobody else sees it or can pay it:
+Customers tap **I'm at a shop**, and appear on the cashier's screen with their first name and a short code. If the phone's location can't find the shop, they type or scan the code on the cashier's screen instead, which needs no location. The bill then goes to one phone, so nobody else sees it or can pay it:
 
 - **Person:** the cashier asks the name and taps it in the list.
-- **AI auto:** the till asks out loud, hears the name, and sends the bill on one clear match, allowing for spellings like Rahim and Raheem. Same names or unclear answers go back to the cashier with the likely people listed.
+- **AI auto:** a voice assistant runs the counter. Tap **Start a voice bill** and it hears the order, reads back the items and total, and creates the bill when someone says yes. It then asks for a name and sends the bill on one clear match, allowing for spellings like Rahim and Raheem, and says when the payment arrives. Same names or unclear answers go back to the cashier with the likely people listed. It only listens after a tap and stops after each bill. The customer's phone also speaks the steps while paying, and this can be turned off.
 
 **Alert everyone nearby** is the fallback for when no name matches. Those phones see only "A bill is ready at Lumen Books" until someone opens it. The QR code and six-digit code still work without alerts.
 
-Location finds the building, not the floor, so the list can include people on other floors. That's why it says *nearby* and shows a code to check against the phone. Presence stores the building and the code, never a position, and disappears within 45 seconds of the phone going quiet.
+Location finds the building, not the floor, so the list can include people on other floors. That's why it says *nearby* and shows a code to check against the phone. Presence stores the building and the code, never a position, and disappears within two minutes of the phone going quiet. Phones keep the screen on while waiting, where the browser allows it, because a locked phone stops checking in.
 
 ## Keys to set
 
@@ -177,8 +177,8 @@ Customer phone ◀──API──▶ │ intent state machine · PayPal client �
 2. **Sending the bill or shop detection.** A customer who tapped *I'm at a shop* gets the bill on their phone once the cashier picks them, or the till matches their spoken name. Otherwise browser location finds the *building* and the shop ranker picks the *shop* (shops on floors 3, 4 and 5 share coordinates); the customer confirms, picks from the list, or types the counter's rotating code.
 3. **PayPal.** With a saved account (PayPal Vault) and a bill up to $200, this step is skipped: no PayPal order exists yet, because creating one with a saved account captures it at once. Otherwise the server creates an Orders v2 order (intent `CAPTURE`), the buyer approves with the **PayPal JavaScript SDK v6**, and the server checks the approval and amount with PayPal. Nothing is captured yet.
 4. **Risk tier and nonce.** The risk engine picks tier 1, 2 or 3, and the server issues a 128-bit single-use nonce valid for 120 s.
-5. **Sign in the air, hands-free.** Hold the phone still: the pad turns green, buzzes and plays a tone where the browser allows it. Moving the phone starts the recording, and holding still again ends it; the half-second of stillness before the first stroke is kept, because the server measures the sensor noise there. The signature appears as pen ink, reconstructed from the phone's in-plane movement (accelerometer) and wrist rotation (gyroscope), with a short Redo window before it is sent. Twitches that are too short or weak to be a signature are discarded without using up an attempt. The ink is only a picture for the person; the verifier works on the raw sensor data.
-6. **Verify.** Preprocess, then score against the template, then run the replay and sensor checks, which gives ACCEPT, STEP_UP or REJECT.
+5. **Sign in the air, hands-free.** Hold the phone still: the pad turns green, buzzes and plays a tone where the browser allows it. Moving the phone starts the recording, and holding still again ends it; the half-second of stillness before the first stroke is kept, because the server measures the sensor noise there. The signature appears as pen ink, reconstructed from the phone's in-plane movement (accelerometer) and wrist rotation (gyroscope), with a short Redo window before it is sent. Start and stop use a short average of the motion, so small shakes don't trigger them. Twitches that are too short or weak to be a signature are discarded without using up an attempt. The ink is only a picture for the person; the verifier works on the raw sensor data.
+6. **Verify.** Preprocess, trimming small shakes and short jolts from both ends of the recording so only the signature is compared, then score against the template, then run the replay and sensor checks, which gives ACCEPT, STEP_UP or REJECT.
 7. **Capture.** Only a VERIFIED intent takes money: the approved order is captured, or the saved account is charged, with a `PayPal-Request-Id` idempotency key either way. The receipt comes from PayPal's response, and the `PAYMENT.CAPTURE.COMPLETED` webhook (signature verified with PayPal) reconciles it.
 
 **The one rule:** the only code path that can move money is a passing sign-off (`backend/airsign/intents.py::_capture`, called only from `signoff`). Tests enforce it for both the capture and the saved-account charge.

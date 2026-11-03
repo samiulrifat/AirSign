@@ -4,6 +4,7 @@ import { del, get, post, type Intent, type Me } from '../lib/api'
 import { errorText, money, useApp } from '../lib/app'
 import { SimBadge, Spinner, TopBar } from '../components/bits'
 import BillAlerts from '../components/BillAlerts'
+import { promptsOn, setPromptsOn } from '../lib/speech'
 import WalletCard from '../components/WalletCard'
 
 function Welcome() {
@@ -70,6 +71,7 @@ function Dashboard({ me }: { me: Me }) {
   const { setMe, config } = useApp()
   const [payments, setPayments] = useState<Intent[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [spoken, setSpoken] = useState(promptsOn)
 
   useEffect(() => {
     get<Intent[]>('/intents').then(setPayments).catch(() => setPayments([]))
@@ -172,6 +174,17 @@ function Dashboard({ me }: { me: Me }) {
             Delete all my data
           </button>
         </div>
+        <label className="check" style={{ marginTop: 14 }}>
+          <input
+            type="checkbox"
+            checked={spoken}
+            onChange={(e) => {
+              setSpoken(e.target.checked)
+              setPromptsOn(e.target.checked)
+            }}
+          />
+          <span>Speak the steps while paying. This says the amount out loud.</span>
+        </label>
         <p className="tiny" style={{ marginTop: 12 }}>
           PayPal: {config?.paypal_mode === 'sandbox' ? 'sandbox' : 'built-in mock (sandbox credentials not configured)'}.
           Location is read when you tap, or while "I'm at a shop" is on. Your position is not stored. While it is on,

@@ -16,7 +16,8 @@ export default function Checkin() {
   useEffect(() => {
     if (!token || !me?.user) return
     post<CheckinState>('/checkin', { token })
-      .then((r) => navigate('/pay', { replace: true, state: { checkin: r } }))
+      // A code for a bill goes straight to paying. A shop's code puts the customer on the cashier's list.
+      .then((r) => (r.invoice ? navigate('/pay', { replace: true, state: { checkin: r } }) : navigate('/', { replace: true, state: { joined: r.checkin_pass } })))
       .catch((e) => setError(errorText(e)))
   }, [token, me, navigate])
 

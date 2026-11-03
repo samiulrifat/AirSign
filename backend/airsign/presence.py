@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 
 from .models import Presence, User, now
 
-TTL = timedelta(seconds=45)
+# Long enough for a locked phone or a weak signal not to drop someone from the cashier's list.
+TTL = timedelta(seconds=120)
 # Easy to read aloud: no 0/O, 1/I or similar pairs.
 LETTERS = "ACDEFGHJKMNPRTUVWXY"
 DIGITS = "2346789"

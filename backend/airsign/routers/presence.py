@@ -12,10 +12,10 @@ from ..audit import audit
 from ..auth import customer
 from ..db import get_db
 from ..intents import TERMINAL
-from ..models import Invoice, Merchant, PaymentIntent, now
+from ..models import Building, Invoice, Merchant, PaymentIntent, now
 from ..ratelimit import rate_limit
 from ..shops import MAX_ACCURACY_M
-from .shops import OPEN_INVOICE_WINDOW, _nearest_building, invoice_view, shop_view
+from .shops import OPEN_INVOICE_WINDOW, _nearest_building, checkin_pass_merchant, invoice_view, shop_view
 
 router = APIRouter(prefix="/api")
 
@@ -36,10 +36,25 @@ def busy_with_someone_else(db: Session, invoice_ids: list[str], user_id: str | N
 
 
 class PresenceIn(BaseModel):
-    lat: float = Field(ge=-90, le=90)
-    lon: float = Field(ge=-180, le=180)
-    accuracy: float = Field(gt=0)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
+    accuracy: float | None = Field(default=None, gt=0)
     simulated: bool = False
+    # From typing or scanning the code on the cashier's screen. Works without location.
+    checkin_pass: str | None = None
+
+
+def _building(db: Session, body: PresenceIn, user_id: str) -> tuple[Building | None, str | None]:
+    """The building this customer is in, or why it could not be found."""
+    merchant_id = checkin_pass_merchant(body.checkin_pass, user_id)
+    if merchant_id:
+        return db.get(Building, db.get(Merchant, merchant_id).building_id), None
+    if body.lat is None or body.lon is None or body.accuracy is None:
+        return None, "no_location"
+    if body.accuracy > MAX_ACCURACY_M:
+        return None, "low_accuracy"
+    best = _nearest_building(db, body.lat, body.lon, body.accuracy)
+    return (best[1], None) if best else (None, "no_shop")
 
 
 @router.post("/presence", dependencies=[Depends(rate_limit("bills"))])
@@ -50,8 +65,8 @@ def check_in(body: PresenceIn, session=Depends(customer), db: Session = Depends(
     they show only the shop until the customer opens one.
     """
     user, _ = session
-    best = None if body.accuracy > MAX_ACCURACY_M else _nearest_building(db, body.lat, body.lon, body.accuracy)
-    row = svc.touch(db, user.id, best[1].id, body.simulated) if best else None
+    building, reason = _building(db, body, user.id)
+    row = svc.touch(db, user.id, building.id, body.simulated) if building else None
 
     mine = db.execute(
         select(Invoice, Merchant)
@@ -60,12 +75,12 @@ def check_in(body: PresenceIn, session=Depends(customer), db: Session = Depends(
         .order_by(Invoice.created_at.desc())
     ).all()
     announced = []
-    if best:
+    if building:
         announced = db.execute(
             select(Invoice, Merchant)
             .join(Merchant, Invoice.merchant_id == Merchant.id)
             .where(
-                Merchant.building_id == best[1].id,
+                Merchant.building_id == building.id,
                 Invoice.broadcast.is_(True),
                 Invoice.customer_id.is_(None),
                 Invoice.status == "OPEN",
@@ -75,7 +90,8 @@ def check_in(body: PresenceIn, session=Depends(customer), db: Session = Depends(
         ).all()
     busy = busy_with_someone_else(db, [i.id for i, _ in announced], user.id)
     out = {
-        "you": None if row is None else {"name": user.display_name, "code": row.code, "building": best[1].name},
+        "you": None if row is None else {"name": user.display_name, "code": row.code, "building": building.name},
+        "reason": reason,
         "bills": [{"shop": shop_view(m), "invoice": invoice_view(i)} for i, m in mine],
         "ready": [{"shop": shop_view(m), "invoice_id": i.id} for i, m in announced if i.id not in busy],
     }

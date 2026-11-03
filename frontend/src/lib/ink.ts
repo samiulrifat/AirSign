@@ -13,6 +13,14 @@ export type Ink = { pts: [number, number][]; widths: number[]; aspect: number }
 
 const D2R = Math.PI / 180
 const ACTIVE_DPS = 40 // rotation rate that counts as "signing"
+const SHAKE_FRACTION = 0.17 // of the fastest moment: slower than this at either end is a shake
+// A burst at either end, cut off by a pause, is a jolt if it is short and much slower than
+// the signature. A faster one could be a real last stroke, like the dot on an "i".
+const SHAKE_MAX_S = 0.3
+const JOLT_FRACTION = 0.32
+const SHAKE_GAP_S = 0.15 // the pause that separates a jolt from the signature
+const SMOOTH_S = 0.1 // smooths hand tremor out of the line, without rounding off strokes
+const STILL_DPS = 8 // slower than this the wrist is not writing, so the pen does not move
 
 function movingAverage(v: number[], k: number): number[] {
   if (k <= 1 || v.length < 3) return v.slice()
@@ -91,18 +99,39 @@ function fuse(cands: number[][]): number[] {
   return out
 }
 
-/** The active part of a recording: from the first to the last moment the phone turns. */
+/** A window of about `seconds`, in samples, whatever rate this phone reports at. */
+function windowFor(rows: number[][], seconds: number): number {
+  const meanMs = (rows[rows.length - 1][0] - rows[0][0]) / Math.max(1, rows.length - 1)
+  return Math.max(3, Math.round((seconds * 1000) / Math.max(meanMs, 1))) | 1
+}
+
+/**
+ * The signature inside a recording, without small shakes before or after it. Quiet
+ * shakes fall below the threshold, which scales with how hard this person signed. Short,
+ * weak jolts cut off by a pause are dropped too. Pauses inside the signature stay.
+ */
 function activeRange(rows: number[][]): [number, number] | null {
   const rate = movingAverage(
     rows.map((r) => Math.hypot(r[4], r[5], r[6])),
-    5,
+    windowFor(rows, 0.08),
   )
-  let s = rate.findIndex((x) => x > ACTIVE_DPS)
-  if (s < 0) return null
-  let e = rate.length - 1
-  while (e > s && rate[e] <= ACTIVE_DPS) e--
-  s = Math.max(0, s - 3)
-  e = Math.min(rows.length - 1, e + 3)
+  const peak = Math.max(...rate)
+  const threshold = Math.max(ACTIVE_DPS, peak * SHAKE_FRACTION)
+  const gap = windowFor(rows, SHAKE_GAP_S)
+  const groups: [number, number][] = []
+  rate.forEach((x, i) => {
+    if (x <= threshold) return
+    const last = groups[groups.length - 1]
+    if (last && i - last[1] <= gap) last[1] = i
+    else groups.push([i, i])
+  })
+  if (!groups.length) return null
+  const jolt = windowFor(rows, SHAKE_MAX_S)
+  const isJolt = ([a, b]: [number, number]) => b - a + 1 < jolt && Math.max(...rate.slice(a, b + 1)) < peak * JOLT_FRACTION
+  while (groups.length > 1 && isJolt(groups[0])) groups.shift()
+  while (groups.length > 1 && isJolt(groups[groups.length - 1])) groups.pop()
+  const s = Math.max(0, groups[0][0] - 3)
+  const e = Math.min(rows.length - 1, groups[groups.length - 1][1] + 3)
   return e - s >= 10 ? [s, e] : null
 }
 
@@ -128,14 +157,17 @@ export function computeInk(rows: number[][], accelIncludesGravity = false): Ink 
   const px = integrate(detrend(integrate(acc(1), dt)), dt)
   const py = integrate(detrend(integrate(acc(2), dt)), dt)
   // Pen position from wrist rotation: angle turned about each axis.
-  const ox = integrate(seg.map((r) => r[4] * D2R), dt)
-  const oy = integrate(seg.map((r) => r[5] * D2R), dt)
-  const oz = integrate(seg.map((r) => r[6] * D2R), dt)
+  const turned = (col: number) => integrate(seg.map((r) => (Math.abs(r[col]) < STILL_DPS ? 0 : r[col] * D2R)), dt)
+  const ox = turned(4)
+  const oy = turned(5)
+  const oz = turned(6)
 
   let X = fuse([px, oy, oz])
   let Y = fuse([py, ox]).map((y) => -y) // screen y grows downwards
-  X = movingAverage(X, 5)
-  Y = movingAverage(Y, 5)
+  // Two passes make a gentle bell-shaped filter, which rounds strokes less than one long pass.
+  const k = windowFor(seg, SMOOTH_S)
+  X = movingAverage(movingAverage(X, k), k)
+  Y = movingAverage(movingAverage(Y, k), k)
 
   // Signatures are wider than tall; keep the measured proportion within reason.
   const sdx = standardize(px).sd

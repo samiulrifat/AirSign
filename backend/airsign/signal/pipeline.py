@@ -36,6 +36,16 @@ START_HOLD_S = 0.1
 END_HOLD_S = 0.3
 ACTIVITY_LAMBDA = 0.25  # weight of linear acceleration energy vs rotation energy
 MIN_ACTIVITY_MARGIN = 0.05  # absolute floor on the start threshold above the noise mean
+# A small shake before or after signing is not part of the signature. Activity is energy,
+# so this is about 11 percent of the peak's rotation speed. Measured on synthetic people:
+# clean signatures score as if nothing were trimmed, and shakes up to 60 deg/s are removed.
+SHAKE_ENERGY_FRACTION = 0.012
+# A burst at either end, cut off by a pause, is a jolt if it is short and clearly weaker
+# than the signature. 0.1 of the peak energy is about a third of the speed. A stronger
+# one could be a real last stroke, like the dot on an "i", so it stays.
+SHAKE_MAX_S = 0.3
+JOLT_ENERGY_FRACTION = 0.1
+SHAKE_GAP_S = 0.15  # the pause that separates a jolt from the signature
 
 _LOWPASS_SOS = butter(4, LOWPASS_HZ, btype="low", fs=FS, output="sos")
 _GRAVITY_SOS = butter(2, GRAVITY_HP_HZ, btype="high", fs=FS, output="sos")
@@ -123,6 +133,29 @@ def _quietest_window_var(residual: np.ndarray, window_s: float = NOISE_WINDOW_S)
     return best
 
 
+def _trim_shakes(smooth: np.ndarray, start: int, end: int) -> tuple[int, int]:
+    """Move the segment's ends inwards past small shakes and short jolts.
+
+    Only the two ends change. A pause or a quiet stroke inside the signature stays,
+    since the middle of a signature is what gets compared.
+    """
+    part = smooth[start:end]
+    if part.size == 0:
+        return start, end
+    level = SHAKE_ENERGY_FRACTION * float(part.max())
+    above = np.flatnonzero(part >= level)
+    # Groups of motion, split wherever the hand paused for long enough.
+    gap = max(1, int(round(SHAKE_GAP_S * FS)))
+    groups = np.split(above, np.flatnonzero(np.diff(above) > gap) + 1)
+    peak = float(part.max())
+    is_jolt = lambda g: (g[-1] - g[0] + 1) / FS < SHAKE_MAX_S and float(part[g].max()) < JOLT_ENERGY_FRACTION * peak
+    while len(groups) > 1 and is_jolt(groups[0]):
+        groups.pop(0)
+    while len(groups) > 1 and is_jolt(groups[-1]):
+        groups.pop()
+    return start + int(groups[0][0]), start + int(groups[-1][-1]) + 1
+
+
 def segment(activity: np.ndarray) -> tuple[int, int, dict]:
     """Stage 4. Find the active part with hysteresis thresholds from the noise floor.
 
@@ -165,6 +198,7 @@ def segment(activity: np.ndarray) -> tuple[int, int, dict]:
     # letters, say) must not end it, so we search backwards from the release.
     active = np.nonzero(smooth[start:] >= theta_low)[0]
     end = start + int(active[-1]) + 1 if active.size else n
+    start, end = _trim_shakes(smooth, start, end)
     end = min(n, end + end_hold // 3)  # keep the tail of the last stroke
     info = {"noise_mu": mu, "noise_sigma": sigma, "lead_in_still": lead_in_still}
     return start, end, info

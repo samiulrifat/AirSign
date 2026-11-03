@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { del, get, post, type Building, type Invoice, type Shop } from '../lib/api'
-import { floorLabel, money, useApp } from '../lib/app'
+import { errorText, floorLabel, money, useApp } from '../lib/app'
+import { prompt } from '../lib/speech'
 import { cue, unlockFeedback } from '../lib/feedback'
 import { askNotifications, notify } from '../lib/notify'
 import { DemoControls, SimBadge, Spinner } from './bits'
@@ -9,13 +10,32 @@ import { DemoControls, SimBadge, Spinner } from './bits'
 type Bill = { shop: Shop; invoice: Invoice }
 type Ready = { shop: Shop; invoice_id: string }
 type Position = { lat: number; lon: number; accuracy: number }
-type CheckIn = { you: { name: string; code: string; building: string } | null; bills: Bill[]; ready: Ready[] }
+type CheckIn = { you: { name: string; code: string; building: string } | null; reason: 'no_shop' | 'low_accuracy' | 'no_location' | null; bills: Bill[]; ready: Ready[] }
+type Joined = { invoice: Invoice | null; checkin_pass: string; shop: Shop }
 
 /** Passed to the payment page, which goes straight from the bill to signing. */
-export type BillStart = Bill & { location: Position; simulated: boolean; sent: boolean }
+export type BillStart = Bill & { location: Position | null; simulated: boolean; sent: boolean; checkinPass: string | null }
 
 const POLL_MS = 3000
 const REMEMBER = 'airsign.bill-alerts'
+const JOIN_PASS = 'airsign.join-pass'
+
+function savedPass(): string | null {
+  try {
+    return sessionStorage.getItem(JOIN_PASS)
+  } catch {
+    return null
+  }
+}
+
+function savePass(value: string | null) {
+  try {
+    if (value) sessionStorage.setItem(JOIN_PASS, value)
+    else sessionStorage.removeItem(JOIN_PASS)
+  } catch {
+    /* it just lasts until the page closes */
+  }
+}
 
 function remembered(): boolean {
   try {
@@ -37,7 +57,12 @@ function remember(on: boolean) {
 export default function BillAlerts() {
   const { config } = useApp()
   const navigate = useNavigate()
-  const [on, setOn] = useState(false)
+  const joinedByScan = (useLocation().state as { joined?: string } | null)?.joined ?? null
+  const [joinPass, setJoinPass] = useState<string | null>(joinedByScan ?? savedPass())
+  const [code, setCode] = useState('')
+  const [joining, setJoining] = useState(false)
+  const [offline, setOffline] = useState(false)
+  const [on, setOn] = useState(joinPass !== null)
   const [position, setPosition] = useState<Position | null>(null)
   const [simulated, setSimulated] = useState(false)
   const [state, setState] = useState<CheckIn | null>(null)
@@ -61,7 +86,31 @@ export default function BillAlerts() {
   }, [])
 
   useEffect(() => {
-    if (!on || simulated) return
+    savePass(joinPass)
+  }, [joinPass])
+
+  // A locked phone stops checking in, so keep the screen on while waiting for a bill.
+  useEffect(() => {
+    if (!on || !navigator.wakeLock) return
+    let lock: WakeLockSentinel | null = null
+    const acquire = () => {
+      if (document.visibilityState === 'visible') {
+        navigator.wakeLock
+          .request('screen')
+          .then((l) => (lock = l))
+          .catch(() => {})
+      }
+    }
+    acquire()
+    document.addEventListener('visibilitychange', acquire)
+    return () => {
+      document.removeEventListener('visibilitychange', acquire)
+      void lock?.release().catch(() => {})
+    }
+  }, [on])
+
+  useEffect(() => {
+    if (!on || simulated || joinPass) return
     if (!navigator.geolocation) {
       setError('This browser cannot share location. Use the code on the cashier screen instead.')
       return
@@ -77,14 +126,20 @@ export default function BillAlerts() {
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 },
     )
     return () => navigator.geolocation.clearWatch(id)
-  }, [on, simulated])
+  }, [on, simulated, joinPass])
 
   useEffect(() => {
-    if (!on || !position) return
+    if (!on || (!position && !joinPass)) return
     let stop = false
     const check = async () => {
-      const r = await post<CheckIn>('/presence', { ...position, simulated }).catch(() => null)
-      if (stop || !r) return
+      const r = await post<CheckIn>('/presence', joinPass ? { checkin_pass: joinPass } : { ...position, simulated }).catch(() => null)
+      if (stop) return
+      setOffline(!r)
+      if (!r) return
+      if (joinPass && !r.you) {
+        setJoinPass(null) // the pass expired: go back to location, or a new code
+        return
+      }
       setState(r)
       const fresh: [string, string, string][] = [
         ...r.bills.map((b): [string, string, string] => [b.invoice.id, `${b.shop.name}: ${money(b.invoice.amount_cents, b.invoice.currency)}`, 'Open AirSign and sign in the air to pay.']),
@@ -95,6 +150,7 @@ export default function BillAlerts() {
         announced.current.add(id)
         cue('ready')
         void notify(title, body, id)
+        prompt(title)
       }
     }
     void check()
@@ -103,7 +159,40 @@ export default function BillAlerts() {
       stop = true
       clearInterval(t)
     }
-  }, [on, position, simulated])
+  }, [on, position, simulated, joinPass])
+
+  async function joinWithCode(e: React.FormEvent) {
+    e.preventDefault()
+    setJoining(true)
+    setError(null)
+    try {
+      const r = await post<Joined>('/checkin', { code })
+      setCode('')
+      if (r.invoice) {
+        navigate('/pay', { state: { checkin: r } })
+        return
+      }
+      unlockFeedback()
+      setPosition(null)
+      setSimulated(false)
+      setJoinPass(r.checkin_pass)
+      setOn(true)
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setJoining(false)
+    }
+  }
+
+  async function placeHere(b: Building) {
+    if (!position) return
+    setError(null)
+    try {
+      await post('/sim/move-building', { building_id: b.id, lat: position.lat, lon: position.lon })
+    } catch (err) {
+      setError(errorText(err))
+    }
+  }
 
   async function turnOn() {
     unlockFeedback()
@@ -122,6 +211,8 @@ export default function BillAlerts() {
     setState(null)
     setOpened(null)
     setError(null)
+    setJoinPass(null)
+    setOffline(false)
     remember(false)
     void del('/presence').catch(() => {})
   }
@@ -129,14 +220,14 @@ export default function BillAlerts() {
   function pretend(b: Building) {
     unlockFeedback()
     setError(null)
+    setJoinPass(null)
     setSimulated(true)
     setPosition({ lat: b.lat, lon: b.lon, accuracy: 25 })
     setOn(true)
   }
 
   function pay(b: Bill, sent: boolean) {
-    if (!position) return
-    const start: BillStart = { ...b, location: position, simulated, sent }
+    const start: BillStart = { ...b, location: position, simulated, sent, checkinPass: joinPass }
     navigate('/pay', { state: { bill: start } })
   }
 
@@ -203,20 +294,30 @@ export default function BillAlerts() {
               </div>
               <p className="muted small">Keep AirSign open. Your phone buzzes when the bill arrives.</p>
             </>
-          ) : position ? (
-            <>
-              <h1>No AirSign shop here</h1>
-              <p className="muted">Move closer to the shop, or use the code on the cashier's screen.</p>
-              <Link to="/pay" className="text-link">
-                Use a code
-              </Link>
-            </>
           ) : (
             <>
-              <h1>Finding you</h1>
-              <p className="row muted">
-                <Spinner /> Checking which building you're in
-              </p>
+              <h1>{state?.reason === 'low_accuracy' ? "Your location isn't precise enough" : state?.reason === 'no_shop' ? 'No AirSign shop found here' : 'Finding you'}</h1>
+              {state?.reason ? (
+                <p className="muted">Enter the code on the cashier's screen instead.</p>
+              ) : (
+                <p className="row muted">
+                  <Spinner /> Checking which building you're in
+                </p>
+              )}
+              <form className="row" style={{ marginBottom: 12 }} onSubmit={joinWithCode}>
+                <input
+                  aria-label="Code on the cashier's screen"
+                  inputMode="numeric"
+                  pattern="[0-9]{6}"
+                  maxLength={6}
+                  placeholder="123456"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                />
+                <button className="btn" disabled={code.length !== 6 || joining}>
+                  Join
+                </button>
+              </form>
             </>
           )}
           <button className="btn quiet block" onClick={turnOff}>
@@ -225,6 +326,7 @@ export default function BillAlerts() {
         </div>
       )}
       {error && <div className="notice warn">{error}</div>}
+      {offline && <div className="notice warn">Can't reach AirSign, so the cashier may not see you. Trying again…</div>}
       {!bill &&
         ready.map((r) => (
           <button key={r.invoice_id} className="ready-row" onClick={() => open(r)}>
@@ -234,7 +336,7 @@ export default function BillAlerts() {
             <span aria-hidden="true">›</span>
           </button>
         ))}
-      {config?.allow_simulation && buildings.length > 0 && !bill && !(on && !simulated) && (
+      {config?.allow_simulation && buildings.length > 0 && !bill && !you && (
         <DemoControls>
           <p className="small muted">Pretend this phone is inside a building.</p>
           {buildings.map((b) => (
@@ -242,6 +344,16 @@ export default function BillAlerts() {
               I'm in {b.name}
             </button>
           ))}
+          {state?.reason === 'no_shop' && !simulated && position && (
+            <>
+              <p className="small muted">Or move a demo building to where you're standing. This moves it for everyone.</p>
+              {buildings.map((b) => (
+                <button key={b.id} className="btn sim small block" onClick={() => placeHere(b)}>
+                  Place {b.name} here
+                </button>
+              ))}
+            </>
+          )}
         </DemoControls>
       )}
     </>

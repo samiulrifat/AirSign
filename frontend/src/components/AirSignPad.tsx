@@ -2,22 +2,25 @@ import { useEffect, useRef, useState } from 'react'
 import type { Recording } from '../lib/api'
 import { cue, unlockFeedback } from '../lib/feedback'
 import { computeInk, drawInk, type Ink } from '../lib/ink'
+import { LivePen, MotionLevel } from '../lib/motion-level'
 import { MotionRecorder, needsPermissionTap, requestMotionPermission } from '../lib/sensors'
 
 // Hands-free capture: hold the phone still, sign in the air, hold still again.
-// Thresholds are in degrees per second (rotation) and m/s^2 (acceleration).
-const STILL_DPS = 15
-const STILL_ACC = 0.6
+// Thresholds are in degrees per second (rotation) and m/s^2 (acceleration), and apply
+// to a short average of the motion (see MotionLevel), so a small shake crosses none of them.
+const STILL_DPS = 20
+const STILL_ACC = 0.8
 const SETTLE_MS = 700 // stillness needed before "ready"; also kept as the lead-in
 const START_DPS = 60
-const START_ACC = 2.0
-const START_SAMPLES = 4 // consecutive moving samples that start a recording
-const STOP_DPS = 25
-const STOP_ACC = 0.9
+const START_ACC = 2.5
+const START_MS = 150 // motion must last this long to start a recording
+const STOP_DPS = 30
+const STOP_ACC = 1.1
 const STOP_MS = 600 // stillness that ends a recording; kept as the tail
 const MAX_GESTURE_MS = 5000
 const MIN_GESTURE_MS = 1000
-const MIN_PEAK_DPS = 90 // weaker than this is not a signature, just a twitch
+const MIN_PEAK_DPS = 70 // weaker than this is not a signature, just a twitch
+const SILENT_BELOW_MS = 500 // something this brief was a bump: drop it without comment
 
 // Once motion access is granted it stays granted for this page; asking again on
 // every screen would be a needless tap.
@@ -127,18 +130,19 @@ export function AirSignPad({
     const buffer: number[][] = []
     let rec: number[][] = []
     let stillSince: number | null = null
-    let moving = 0
+    let movingSince: number | null = null
     let motionStart = 0
     let peak = 0
     let stopSince: number | null = null
     let ema = [0, 0, 0]
-    let live = { x: 0, y: 0, pts: [] as [number, number][], last: 0 }
+    let pen = new LivePen(0)
+    const level = new MotionLevel()
     let raf = 0
 
     const drawLive = () => {
       raf = 0
       const c = canvas.current
-      if (c && live.pts.length > 1) drawInk(c, { pts: live.pts, widths: live.pts.map(() => 0.8), aspect: 1 })
+      if (c && pen.pts.length > 1) drawInk(c, { pts: pen.pts, widths: pen.pts.map(() => 0.8), aspect: 1 })
     }
 
     const off = motion.recorder.onRow((row) => {
@@ -154,8 +158,7 @@ export function AirSignPad({
         ema = ema.map((e, i) => (e === 0 ? a[i] : e * 0.92 + a[i] * 0.08))
         a = a.map((x, i) => x - ema[i])
       }
-      const rot = Math.hypot(row[4], row[5], row[6])
-      const acc = Math.hypot(a[0], a[1], a[2])
+      const { rot, acc } = level.push(t, Math.hypot(row[4], row[5], row[6]), Math.hypot(a[0], a[1], a[2]))
 
       if (p === 'settle') {
         if (rot < STILL_DPS && acc < STILL_ACC) {
@@ -169,14 +172,14 @@ export function AirSignPad({
           stillSince = null
         }
       } else if (p === 'ready') {
-        moving = rot > START_DPS || acc > START_ACC ? moving + 1 : 0
-        if (moving >= START_SAMPLES) {
+        movingSince = rot > START_DPS || acc > START_ACC ? (movingSince ?? t) : null
+        if (movingSince !== null && t - movingSince >= START_MS) {
           // Keep the still moment before the first stroke: the server measures sensor noise there.
           rec = buffer.filter((r) => r[0] >= t - SETTLE_MS - 100)
-          motionStart = t
+          motionStart = movingSince
           peak = rot
           stopSince = null
-          live = { x: 0, y: 0, pts: [[0, 0]], last: t }
+          pen = new LivePen(t)
           setInk(null)
           go('recording')
           cue('start')
@@ -184,11 +187,7 @@ export function AirSignPad({
       } else if (p === 'recording') {
         rec.push(row)
         peak = Math.max(peak, rot)
-        const dt = Math.min(0.05, (t - live.last) / 1000)
-        live.last = t
-        live.x += row[5] * dt // turning about y moves the pen sideways
-        live.y += row[4] * dt // turning about x moves it up and down
-        live.pts.push([live.x, live.y])
+        pen.push(t, row[4], row[5])
         if (!raf) raf = requestAnimationFrame(drawLive)
 
         const quiet = rot < STOP_DPS && acc < STOP_ACC
@@ -196,11 +195,13 @@ export function AirSignPad({
         const gestureMs = (stopSince ?? t) - motionStart
         if ((stopSince !== null && t - stopSince >= STOP_MS) || gestureMs >= MAX_GESTURE_MS) {
           stillSince = null
-          moving = 0
+          movingSince = null
           if (gestureMs < MIN_GESTURE_MS || peak < MIN_PEAK_DPS) {
             // A twitch, not a signature: drop it without using up an attempt.
-            setMessage('That was too short to be a signature. Hold still, then sign your full signature.')
-            cue('retry')
+            if (gestureMs >= SILENT_BELOW_MS) {
+              setMessage('That was too short to be a signature. Hold still, then sign your full signature.')
+              cue('retry')
+            }
             go('settle')
             return
           }

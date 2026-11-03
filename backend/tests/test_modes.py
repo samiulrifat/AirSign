@@ -113,11 +113,15 @@ def test_the_customer_pays_a_sent_bill_by_signing():
     enroll(c)
     assert c.post("/api/wallet/link").status_code == 200
     assert c.post("/api/wallet/link/finish").status_code == 200
-    inv = open_invoice(pos, "14.25")
-    pos.post(f"/api/pos/invoices/{inv['id']}/send", json={"presence_id": row_for(pos, a)["id"]})
-    intent = c.post("/api/intents", json={"invoice_id": inv["id"], "confirmed_by": "sent", "location": HERE}).json()
-    assert intent["state"] == "ARMED" and intent["confirmed_by"] == "sent"
-    out, _ = sign_until_done(c, intent["id"], intent["nonce"])
+    for _ in range(4):  # a genuine signer is occasionally locked out and asks for a new bill
+        inv = open_invoice(pos, "14.25")
+        pos.post(f"/api/pos/invoices/{inv['id']}/send", json={"presence_id": row_for(pos, a)["id"]})
+        intent = c.post("/api/intents", json={"invoice_id": inv["id"], "confirmed_by": "sent", "location": HERE}).json()
+        assert intent["state"] == "ARMED" and intent["confirmed_by"] == "sent"
+        out, _ = sign_until_done(c, intent["id"], intent["nonce"])
+        if out["state"] != "LOCKED":
+            break
+        c.post("/api/presence", json=HERE)
     assert out["state"] == "COMPLETED"
     assert bills_of(c)["bills"] == []
 
@@ -223,3 +227,52 @@ def test_a_plain_bill_cannot_be_opened_as_announced():
     c = customer(unique("Curious"))
     inv = open_invoice(pos, "20.00")
     assert c.post(f"/api/bills/{inv['id']}/open").status_code == 404
+
+
+# Finding customers ------------------------------------------------------------------
+
+
+def test_the_cashier_code_puts_a_customer_on_the_list_without_location():
+    pos = cashier()
+    name = unique("Dhaka")
+    c = customer(name)
+    far = c.post("/api/presence", json={"lat": 23.81, "lon": 90.41, "accuracy": 20}).json()
+    assert far["you"] is None and far["reason"] == "no_shop"
+    assert c.post("/api/presence", json={}).json()["reason"] == "no_location"
+    assert c.post("/api/presence", json={**HERE, "accuracy": 1500}).json()["reason"] == "low_accuracy"
+
+    code = pos.post("/api/pos/checkin-token", json={}).json()["code"]
+    joined = c.post("/api/checkin", json={"code": code}).json()
+    assert joined["invoice"] is None
+    me = c.post("/api/presence", json={"checkin_pass": joined["checkin_pass"]}).json()
+    assert me["you"]["name"] == name and me["reason"] is None
+    assert row_for(pos, name)["code"] == me["you"]["code"]
+
+
+def test_someone_elses_pass_does_not_check_you_in():
+    pos = cashier()
+    owner, thief = customer(unique("Owner")), customer(unique("Thief"))
+    code = pos.post("/api/pos/checkin-token", json={}).json()["code"]
+    stolen = owner.post("/api/checkin", json={"code": code}).json()["checkin_pass"]
+    assert thief.post("/api/presence", json={"checkin_pass": stolen}).json()["you"] is None
+    assert thief.post("/api/presence", json={"checkin_pass": "forged"}).json()["you"] is None
+
+
+def test_phones_on_one_wifi_do_not_use_up_each_others_limit():
+    from airsign.ratelimit import RULES, limiter
+
+    limiter.enabled, limiter_before = True, limiter.enabled
+    limiter.reset()
+    try:
+        phones = [customer(unique("Wifi")) for _ in range(3)]
+        limit = RULES["bills"].limit
+        for _ in range(limit // 2 + 5):  # past the limit if the phones shared it
+            for phone in phones:
+                assert phone.post("/api/presence", json=HERE).status_code == 200
+        lone = phones[0]
+        for _ in range(limit):
+            last = lone.post("/api/presence", json=HERE).status_code
+        assert last == 429  # each phone still has its own limit
+    finally:
+        limiter.enabled = limiter_before
+        limiter.reset()

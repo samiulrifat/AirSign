@@ -29,6 +29,8 @@ class Rule:
     limit: int
     window_s: int
     per_user: bool = True  # also count per signed-in customer
+    # Off for polling: phones on one shop Wi-Fi share an IP and would use up each other's limit.
+    per_ip: bool = True
 
 
 RULES = {
@@ -42,7 +44,7 @@ RULES = {
     "lab_summary": Rule("lab_summary", 6, 600, per_user=False),
     "sim": Rule("sim", 120, 600),
     "ai_bill": Rule("ai_bill", 30, 600, per_user=False),
-    "bills": Rule("bills", 300, 600),
+    "bills": Rule("bills", 300, 600, per_ip=False),
     "wallet": Rule("wallet", 20, 600),
     "send_bill": Rule("send_bill", 120, 600, per_user=False),
 }
@@ -101,11 +103,10 @@ def rate_limit(name: str):
         enabled = limiter.enabled if limiter.enabled is not None else get_settings().rate_limits
         if not enabled:
             return
-        keys = [f"ip:{client_ip(request)}"]
-        if rule.per_user:
-            session = unsign_value(request.cookies.get(SESSION_COOKIE), "session")
-            if session:
-                keys.append(f"user:{session.split('|', 1)[0]}")
+        session = unsign_value(request.cookies.get(SESSION_COOKIE), "session") if rule.per_user else None
+        keys = [f"user:{session.split('|', 1)[0]}"] if session else []
+        if rule.per_ip or not session:
+            keys.append(f"ip:{client_ip(request)}")
         wait = limiter.hit(rule, keys)
         if wait is not None:
             seconds = max(1, math.ceil(wait))

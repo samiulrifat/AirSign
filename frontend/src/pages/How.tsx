@@ -10,9 +10,9 @@ export default function How() {
       <div className="card">
         <h1>How AirSign works</h1>
         <ol className="muted" style={{ paddingLeft: 18 }}>
-          <li>You open AirSign and tap "I'm at a shop". The cashier sees your first name.</li>
+          <li>You open AirSign and tap "I'm at a shop", or scan the code on the cashier's screen. The cashier sees your first name.</li>
           <li>The cashier snaps a photo of the items or says the order, and the AI drafts the bill for the cashier to check.</li>
-          <li>The cashier sends the bill to you by name, or in AI auto mode the till asks your name out loud and sends it.</li>
+          <li>The cashier sends the bill to you by name. In AI auto mode a voice assistant takes the order, reads it back, asks your name and sends it.</li>
           <li>Your phone buzzes. If you saved your PayPal, you go straight to signing. Otherwise, or for bills over $200, you approve in PayPal first. Nothing is charged yet.</li>
           <li>A risk engine decides how strict the check is.</li>
           <li>You hold the phone still, then sign in the air. No need to touch the screen: the app starts and stops recording by itself and draws your signature as ink.</li>

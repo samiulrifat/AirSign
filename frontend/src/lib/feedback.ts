@@ -2,9 +2,17 @@
 // screen is hard to read, so state changes are also felt (vibration, where the
 // browser allows it) and heard (a soft tone). Audio needs one user tap to unlock.
 
+import { prompt } from './speech'
+
 type Cue = 'ready' | 'start' | 'done' | 'retry'
 
 let audio: AudioContext | null = null
+let spokenCues = false
+
+/** While paying, "ready" is also said out loud, since the screen is hard to read. */
+export function setSpokenCues(on: boolean) {
+  spokenCues = on
+}
 
 /** Call from a tap handler (for example "Allow motion sensors") so tones can play later. */
 export function unlockFeedback() {
@@ -43,6 +51,7 @@ export function cue(kind: Cue) {
   if (kind === 'ready') {
     vibrate(25)
     tone(660, 90)
+    if (spokenCues) prompt('Sign now.')
   } else if (kind === 'start') {
     vibrate(12)
   } else if (kind === 'done') {
