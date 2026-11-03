@@ -44,6 +44,7 @@ RULES = {
     "ai_bill": Rule("ai_bill", 30, 600, per_user=False),
     "bills": Rule("bills", 300, 600),
     "wallet": Rule("wallet", 20, 600),
+    "send_bill": Rule("send_bill", 120, 600, per_user=False),
 }
 
 

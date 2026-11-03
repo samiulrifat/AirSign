@@ -88,6 +88,10 @@ class Invoice(Base):
     currency: Mapped[str] = mapped_column(String(3))
     items: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(12), default="OPEN", index=True)  # OPEN, PAID, CANCELLED
+    # Set when the cashier sends the bill to one customer: nobody else can then see or pay it.
+    customer_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # The cashier announced it to everyone nearby, who see only the shop until they open it.
+    broadcast: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
     paid_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
@@ -126,6 +130,19 @@ class AttemptFingerprint(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
+class Presence(Base):
+    """A customer with bill alerts on. Holds the building and a short code, never a position."""
+
+    __tablename__ = "presence"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("prs"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+    building_id: Mapped[str] = mapped_column(ForeignKey("buildings.id"), index=True)
+    code: Mapped[str] = mapped_column(String(4))
+    simulated: Mapped[bool] = mapped_column(Boolean, default=False)
+    arrived_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
+    last_seen: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, index=True)
+
+
 class PayPalWallet(Base):
     """A PayPal account the customer chose to save (PayPal Vault), so later payments skip the PayPal window."""
 
@@ -162,7 +179,7 @@ class PaymentIntent(Base):
     location_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     location_distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     location_accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
-    shop_confirmed_by: Mapped[str] = mapped_column(String(12), default="popup")  # popup, list, code, qr
+    shop_confirmed_by: Mapped[str] = mapped_column(String(12), default="popup")  # popup, list, code, qr, sent
     simulated: Mapped[bool] = mapped_column(Boolean, default=False)
     capture_request_id: Mapped[str | None] = mapped_column(String, nullable=True)
     capture_id: Mapped[str | None] = mapped_column(String, nullable=True)

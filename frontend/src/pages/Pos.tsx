@@ -2,15 +2,37 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { get, post, type Invoice, type Shop } from '../lib/api'
 import { errorText, floorLabel, money, useApp } from '../lib/app'
-import { SimBadge, Spinner, TopBar } from '../components/bits'
+import { canListen, listen, speak, stopSpeaking } from '../lib/speech'
+import { CheckIcon, SimBadge, Spinner, TopBar } from '../components/bits'
 
-type PosInvoice = Invoice & { payment: { state: string; tier: number | null; simulated: boolean; webhook_confirmed: boolean } | null }
+type Customer = { name: string; code: string | null }
+type PosInvoice = Invoice & {
+  broadcast: boolean
+  customer: Customer | null
+  payment: { state: string; tier: number | null; simulated: boolean; webhook_confirmed: boolean } | null
+}
 type Line = { name: string; qty: number; price: string }
-
 type Draft = { lines: Line[]; unmatched: string[]; source: 'gemini' | 'keywords' }
 type CatalogItem = { name: string; price: string }
+type Nearby = { id: string; name: string; code: string; arrived_at: string; simulated: boolean }
+type Mode = 'person' | 'ai'
+type NameMatch = { status: 'sent' | 'choose' | 'nobody'; candidates: Nearby[]; customer: Customer | null }
 
 const PHOTO_MAX_PX = 1024
+const MODE_KEY = 'airsign.pos-mode'
+
+function savedMode(): Mode {
+  try {
+    return localStorage.getItem(MODE_KEY) === 'ai' ? 'ai' : 'person'
+  } catch {
+    return 'person'
+  }
+}
+
+function minutesAgo(iso: string, now: number): string {
+  const m = Math.floor((now - new Date(iso).getTime()) / 60000)
+  return m < 1 ? 'just arrived' : `${m} min`
+}
 
 /** Shrink a photo before upload: small enough to send quickly, sharp enough to read the items. */
 async function shrinkPhoto(file: File): Promise<string> {
@@ -22,108 +44,6 @@ async function shrinkPhoto(file: File): Promise<string> {
   canvas.getContext('2d')?.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
   bitmap.close()
   return canvas.toDataURL('image/jpeg', 0.8)
-}
-
-type SpeechResult = { results: { 0: { transcript: string } }[] }
-type Recognition = { lang: string; onresult: (e: SpeechResult) => void; onend: () => void; onerror: () => void; start: () => void }
-
-function speechRecognition(): (new () => Recognition) | undefined {
-  const w = window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition }
-  return w.SpeechRecognition ?? w.webkitSpeechRecognition
-}
-
-function AiCashier({ onDraft }: { onDraft: (d: Draft) => void }) {
-  const { config } = useApp()
-  const [text, setText] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [listening, setListening] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const Speech = speechRecognition()
-
-  async function ask(body: { text?: string; image?: string }) {
-    setBusy(true)
-    setError(null)
-    try {
-      onDraft(await post<Draft>('/pos/ai-bill', body))
-      setText('')
-    } catch (e) {
-      setError(errorText(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function photo(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-    try {
-      await ask({ image: await shrinkPhoto(file) })
-    } catch {
-      setError('That photo could not be opened. Try another one.')
-    }
-  }
-
-  function listen() {
-    if (!Speech) return
-    const r = new Speech()
-    r.lang = navigator.language
-    r.onresult = (e) => void ask({ text: e.results[0][0].transcript })
-    r.onerror = () => setError('Could not hear that. Type the order instead.')
-    r.onend = () => setListening(false)
-    setError(null)
-    setListening(true)
-    r.start()
-  }
-
-  return (
-    <div className="ai-box">
-      <div className="row between">
-        <h3 style={{ margin: 0 }}>AI cashier</h3>
-        <span className="badge accent">{config?.gemini ? 'Google Gemini' : 'Keyword match'}</span>
-      </div>
-      <form
-        className="row"
-        style={{ marginTop: 10 }}
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (text.trim()) void ask({ text })
-        }}
-      >
-        <input
-          type="text"
-          aria-label="Describe the order"
-          maxLength={300}
-          value={text}
-          placeholder="Two paperbacks and a notebook"
-          onChange={(e) => setText(e.target.value)}
-          style={{ flex: 1, minWidth: 0 }}
-        />
-        <button className="btn small" disabled={busy || !text.trim()}>
-          {busy ? <Spinner /> : 'Draft'}
-        </button>
-      </form>
-      <div className="grid2" style={{ marginTop: 8 }}>
-        {config?.gemini ? (
-          <label className={`btn quiet small${busy ? ' disabled' : ''}`}>
-            Snap the counter
-            <input type="file" accept="image/*" capture="environment" hidden disabled={busy} onChange={photo} />
-          </label>
-        ) : (
-          <button className="btn quiet small" disabled title="Needs AIRSIGN_GEMINI_API_KEY on the server">
-            Photo needs Gemini
-          </button>
-        )}
-        {Speech && (
-          <button type="button" className="btn quiet small" disabled={busy || listening} onClick={listen}>
-            {listening ? 'Listening…' : 'Say the order'}
-          </button>
-        )}
-      </div>
-      {config?.gemini && <p className="tiny" style={{ marginTop: 8 }}>Photos and orders go to Google Gemini. Keep people out of the shot.</p>}
-      {error && <div className="notice warn" style={{ marginTop: 8 }}>{error}</div>}
-    </div>
-  )
 }
 
 function Login({ onLogin }: { onLogin: (s: Shop) => void }) {
@@ -150,7 +70,7 @@ function Login({ onLogin }: { onLogin: (s: Shop) => void }) {
 
   return (
     <form className="card" onSubmit={submit} style={{ maxWidth: 420, margin: '0 auto' }}>
-      <h1>Cashier screen</h1>
+      <h1>Open the till</h1>
       <label className="field">
         <span>Shop</span>
         <select value={shop} onChange={(e) => setShop(e.target.value)}>
@@ -168,6 +88,79 @@ function Login({ onLogin }: { onLogin: (s: Shop) => void }) {
       {error && <div className="notice bad">{error}</div>}
       <button className="btn block">Open the till</button>
     </form>
+  )
+}
+
+function OrderInput({ onDraft }: { onDraft: (d: Draft) => void }) {
+  const { config } = useApp()
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function ask(body: { text?: string; image?: string }) {
+    setBusy(true)
+    setError(null)
+    try {
+      onDraft(await post<Draft>('/pos/ai-bill', body))
+      setText('')
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function photo(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    try {
+      await ask({ image: await shrinkPhoto(file) })
+    } catch {
+      setError('That photo could not be opened. Try another one.')
+    }
+  }
+
+  async function sayOrder() {
+    setError(null)
+    setListening(true)
+    const heard = await listen()
+    setListening(false)
+    if (heard[0]) await ask({ text: heard[0] })
+    else setError('Nothing was heard. Say the order again, or type it.')
+  }
+
+  return (
+    <div className="order-input">
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (text.trim()) void ask({ text })
+        }}
+      >
+        <input type="text" aria-label="Describe the order" maxLength={300} value={text} placeholder="Two paperbacks and a notebook" onChange={(e) => setText(e.target.value)} />
+        <button className="btn" disabled={busy || !text.trim()}>
+          {busy ? <Spinner /> : 'Draft'}
+        </button>
+      </form>
+      <div className="row wrap" style={{ marginTop: 8 }}>
+        {config?.gemini && (
+          <label className={`btn quiet small${busy ? ' disabled' : ''}`}>
+            Snap the counter
+            <input type="file" accept="image/*" capture="environment" hidden disabled={busy} onChange={photo} />
+          </label>
+        )}
+        {canListen() && (
+          <button type="button" className="btn quiet small" disabled={busy || listening} onClick={sayOrder}>
+            {listening ? 'Listening…' : 'Say the order'}
+          </button>
+        )}
+        <span className="tiny">{config?.gemini ? 'Read by Google Gemini. Keep people out of photos.' : 'Add AIRSIGN_GEMINI_API_KEY to read photos.'}</span>
+      </div>
+      {error && <div className="notice warn" style={{ margin: '8px 0 0' }}>{error}</div>}
+    </div>
   )
 }
 
@@ -207,22 +200,23 @@ function NewInvoice({ onCreated }: { onCreated: (inv: Invoice) => void }) {
   return (
     <div className="card">
       <h2>New bill</h2>
-      <AiCashier
+      <OrderInput
         onDraft={(d) => {
           setDraft(d)
           setLines(d.lines)
         }}
       />
       {draft && (
-        <div className={`notice ${draft.lines.length ? 'ok' : 'warn'}`} style={{ marginBottom: 12 }}>
-          {draft.lines.length ? `${draft.source === 'gemini' ? 'Drafted by Gemini' : 'Drafted by keyword match'}. Check it before creating the bill.` : 'Nothing matched this shop’s items.'}
+        <div className={`notice ${draft.lines.length ? 'ok' : 'warn'}`}>
+          {draft.lines.length ? `${draft.source === 'gemini' ? 'Drafted by Gemini' : 'Drafted by keyword match'}. Check it, then create the bill.` : 'Nothing matched what this shop sells.'}
           {draft.unmatched.length > 0 && <div className="tiny">Not in your catalog: {draft.unmatched.join(', ')}</div>}
         </div>
       )}
-      <div className="grid2" style={{ marginBottom: 12 }}>
+      <div className="catalog">
         {catalog.map(({ name, price }) => (
           <button key={name} className="btn quiet small" onClick={() => add(name, price)}>
-            {name} · {price}
+            <span>{name}</span>
+            <span className="price">{price}</span>
           </button>
         ))}
       </div>
@@ -256,7 +250,7 @@ function NewInvoice({ onCreated }: { onCreated: (inv: Invoice) => void }) {
   )
 }
 
-function CheckinPanel({ invoice }: { invoice: PosInvoice }) {
+function CheckinCode({ invoice }: { invoice: PosInvoice }) {
   const [tok, setTok] = useState<{ token: string; code: string } | null>(null)
   const [left, setLeft] = useState(30)
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -272,44 +266,259 @@ function CheckinPanel({ invoice }: { invoice: PosInvoice }) {
   }, [invoice.id])
 
   useEffect(() => {
-    if (invoice.status !== 'OPEN') return
-    refresh()
+    void refresh()
     const t = setInterval(refresh, 30000)
     const c = setInterval(() => setLeft((l) => Math.max(0, l - 1)), 1000)
     return () => {
       clearInterval(t)
       clearInterval(c)
     }
-  }, [invoice.id, invoice.status, refresh])
+  }, [refresh])
 
   useEffect(() => {
     if (tok && canvas.current) {
-      QRCode.toCanvas(canvas.current, `${window.location.origin}/c?t=${encodeURIComponent(tok.token)}`, { width: 220, margin: 1 })
+      QRCode.toCanvas(canvas.current, `${window.location.origin}/c?t=${encodeURIComponent(tok.token)}`, { width: 200, margin: 1 })
     }
   }, [tok])
 
-  const p = invoice.payment
   return (
-    <div className="card center">
-      <p className="tiny">Bill {invoice.id}</p>
-      <div className="amount">{money(invoice.amount_cents, invoice.currency)}</div>
-      {invoice.status === 'PAID' ? (
-        <div className="notice ok">
-          Paid with AirSign{p?.tier ? ` (tier ${p.tier})` : ''}. {p?.webhook_confirmed ? 'PayPal webhook confirmed.' : 'Waiting for the PayPal webhook…'}
-        </div>
-      ) : invoice.status !== 'OPEN' ? (
-        <div className="notice">This bill is {invoice.status.toLowerCase()}.</div>
-      ) : (
-        <>
-          {p && <div className="notice warn">Customer is paying: {p.state.toLowerCase()}</div>}
-          <p className="small muted">Phones here with bill alerts on have been alerted. Or scan to check in, or type the code.</p>
-          <div className="qr">
-            <canvas ref={canvas} />
-          </div>
-          <div className="code">{tok?.code ?? '······'}</div>
-          <p className="tiny">New code in {left}s. Each code works once.</p>
-        </>
+    <div className="center" style={{ marginTop: 12 }}>
+      <div className="qr">
+        <canvas ref={canvas} />
+      </div>
+      <div className="code">{tok?.code ?? '······'}</div>
+      <p className="tiny">New code in {left}s. Each code works once.</p>
+    </div>
+  )
+}
+
+function NearbyList({ people, onPick, busy }: { people: Nearby[]; onPick: (p: Nearby) => void; busy: boolean }) {
+  // Re-rendered by the cashier screen's polling, so the arrival times stay current.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30000)
+    return () => clearInterval(t)
+  }, [])
+  return (
+    <ul className="list people">
+      {people.map((p) => (
+        <li key={p.id}>
+          <button className="item" disabled={busy} onClick={() => onPick(p)}>
+            <span className="row">
+              <span className="code-chip">{p.code}</span>
+              <span>
+                <strong>{p.name}</strong>
+                <br />
+                <span className="tiny">
+                  {minutesAgo(p.arrived_at, now)} {p.simulated && '· simulated'}
+                </span>
+              </span>
+            </span>
+            <span className="send-label">Send</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+type AskPhase = 'idle' | 'asking' | 'listening' | 'matching' | 'choose' | 'nobody' | 'unheard'
+
+/** AI auto mode: the till asks for a name out loud and sends the bill on one clear match. */
+function AskName({ invoice, autoAsk, onSent, onPick, busy }: { invoice: PosInvoice; autoAsk: boolean; onSent: () => void; onPick: (p: Nearby) => void; busy: boolean }) {
+  const [phase, setPhase] = useState<AskPhase>('idle')
+  const [candidates, setCandidates] = useState<Nearby[]>([])
+  const [typed, setTyped] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const run = useRef(0)
+
+  const match = useCallback(
+    async (heard: string[], id: number) => {
+      setPhase('matching')
+      try {
+        const r = await post<NameMatch>(`/pos/invoices/${invoice.id}/match-name`, { heard })
+        if (id !== run.current) return
+        if (r.status === 'sent') {
+          onSent()
+          void speak(`Sent to ${r.customer?.name}. Please sign on your phone.`)
+        } else {
+          setCandidates(r.candidates)
+          setPhase(r.status)
+          void speak(r.status === 'choose' ? 'Please choose your name on the screen.' : 'I could not find that name nearby.')
+        }
+      } catch (e) {
+        setError(errorText(e))
+        setPhase('idle')
+      }
+    },
+    [invoice.id, onSent],
+  )
+
+  const ask = useCallback(async () => {
+    const id = ++run.current
+    setError(null)
+    setPhase('asking')
+    await speak('What name should I send this bill to?')
+    if (id !== run.current) return
+    if (!canListen()) {
+      setPhase('idle')
+      return
+    }
+    setPhase('listening')
+    const heard = await listen()
+    if (id !== run.current) return
+    if (heard.length) await match(heard, id)
+    else setPhase('unheard')
+  }, [match])
+
+  useEffect(() => {
+    if (autoAsk) void ask()
+    return () => {
+      run.current++
+      stopSpeaking()
+    }
+  }, [autoAsk, ask])
+
+  const status: Record<AskPhase, string> = {
+    idle: 'Ask the customer their name',
+    asking: 'Asking for a name…',
+    listening: 'Listening…',
+    matching: 'Looking for that name…',
+    choose: 'Which one is it?',
+    nobody: "That name isn't nearby",
+    unheard: 'Nothing was heard',
+  }
+
+  return (
+    <div>
+      <div className={`voice ${phase}`} role="status" aria-live="polite">
+        {['asking', 'listening', 'matching'].includes(phase) && <Spinner />} {status[phase]}
+      </div>
+      {phase === 'nobody' && <p className="small muted">They need AirSign open with "I'm at a shop" on.</p>}
+      {phase === 'choose' && <NearbyList people={candidates} busy={busy} onPick={onPick} />}
+      <form
+        className="row"
+        style={{ marginTop: 10 }}
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (!typed.trim()) return
+          const id = ++run.current
+          stopSpeaking()
+          void match([typed], id)
+          setTyped('')
+        }}
+      >
+        <input type="text" aria-label="Customer name" maxLength={60} placeholder="Or type the name" value={typed} onChange={(e) => setTyped(e.target.value)} />
+        <button className="btn quiet" disabled={!typed.trim()}>
+          Send
+        </button>
+      </form>
+      {canListen() && (
+        <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => void ask()} disabled={['asking', 'listening', 'matching'].includes(phase)}>
+          Ask again
+        </button>
       )}
+      {error && <div className="notice warn" style={{ marginTop: 8 }}>{error}</div>}
+    </div>
+  )
+}
+
+function BillPanel({ invoice, mode, people, autoAsk, reload }: { invoice: PosInvoice; mode: Mode; people: Nearby[]; autoAsk: boolean; reload: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [showCode, setShowCode] = useState(false)
+  const p = invoice.payment
+  const items = invoice.items.map((i) => `${i.qty}× ${i.name}`).join(', ')
+  const signing = p && !['COMPLETED', 'CANCELLED', 'EXPIRED', 'LOCKED', 'FAILED'].includes(p.state)
+
+  async function act(fn: () => Promise<unknown>) {
+    setBusy(true)
+    setError(null)
+    try {
+      await fn()
+      reload()
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const send = (person: Nearby | null) => act(() => post(`/pos/invoices/${invoice.id}/send`, { presence_id: person?.id ?? null }))
+
+  if (invoice.status === 'PAID') {
+    return (
+      <div className="card center bill-panel">
+        <CheckIcon />
+        <h2>Paid with AirSign</h2>
+        <div className="amount">{money(invoice.amount_cents, invoice.currency)}</div>
+        <p className="muted small">
+          {invoice.customer ? `${invoice.customer.name}. ` : ''}
+          {p?.webhook_confirmed ? 'Confirmed by PayPal.' : 'Waiting for PayPal to confirm…'}
+        </p>
+        {p?.simulated && <SimBadge />}
+      </div>
+    )
+  }
+  if (invoice.status !== 'OPEN') {
+    return (
+      <div className="card center bill-panel">
+        <div className="amount">{money(invoice.amount_cents, invoice.currency)}</div>
+        <p className="muted">This bill is {invoice.status.toLowerCase()}.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="card bill-panel">
+      <div className="center">
+        <div className="amount">{money(invoice.amount_cents, invoice.currency)}</div>
+        {items && <p className="muted small">{items}</p>}
+      </div>
+      {error && <div className="notice warn">{error}</div>}
+      {invoice.customer ? (
+        <>
+          <div className="sent-to">
+            {invoice.customer.code && <span className="code-chip">{invoice.customer.code}</span>}
+            <span>
+              {signing ? 'Signing' : 'Sent to'} <strong>{invoice.customer.name}</strong>
+            </span>
+          </div>
+          <p className="small muted center">{signing ? 'Waiting for the air signature.' : 'Waiting for them to open it on their phone.'}</p>
+          {!signing && (
+            <button className="btn ghost block" disabled={busy} onClick={() => send(null)}>
+              Send to someone else
+            </button>
+          )}
+        </>
+      ) : signing ? (
+        <p className="notice">Someone is signing for this bill.</p>
+      ) : mode === 'ai' ? (
+        <AskName invoice={invoice} autoAsk={autoAsk} onSent={reload} onPick={send} busy={busy} />
+      ) : people.length > 0 ? (
+        <>
+          <h3>Ask their name, then send</h3>
+          <NearbyList people={people} busy={busy} onPick={send} />
+          <p className="tiny">People with AirSign open in this building, which can include other floors. Check the code matches their phone.</p>
+        </>
+      ) : (
+        <p className="notice">Nobody nearby yet. Ask the customer to open AirSign and tap "I'm at a shop".</p>
+      )}
+      {!invoice.customer && !signing && (
+        <div className="fallbacks">
+          {invoice.broadcast ? (
+            <p className="small muted">Everyone nearby was alerted. They see your shop's name until they open it.</p>
+          ) : (
+            <button className="btn ghost small" disabled={busy} onClick={() => act(() => post(`/pos/invoices/${invoice.id}/broadcast`))}>
+              Alert everyone nearby
+            </button>
+          )}
+          <button className="btn ghost small" onClick={() => setShowCode((s) => !s)}>
+            {showCode ? 'Hide the code' : 'Show a QR code'}
+          </button>
+        </div>
+      )}
+      {showCode && !invoice.customer && <CheckinCode invoice={invoice} />}
     </div>
   )
 }
@@ -317,7 +526,10 @@ function CheckinPanel({ invoice }: { invoice: PosInvoice }) {
 export default function Pos() {
   const [shop, setShop] = useState<Shop | null | undefined>(undefined)
   const [invoices, setInvoices] = useState<PosInvoice[]>([])
+  const [people, setPeople] = useState<Nearby[]>([])
   const [selected, setSelected] = useState<string | null>(null)
+  const [justCreated, setJustCreated] = useState<string | null>(null)
+  const [mode, setMode] = useState<Mode>(savedMode)
 
   useEffect(() => {
     get<Shop | null>('/pos/me').then(setShop).catch(() => setShop(null))
@@ -325,7 +537,9 @@ export default function Pos() {
 
   const load = useCallback(async () => {
     try {
-      setInvoices(await get<PosInvoice[]>('/pos/invoices'))
+      const [inv, near] = await Promise.all([get<PosInvoice[]>('/pos/invoices'), get<Nearby[]>('/pos/nearby')])
+      setInvoices(inv)
+      setPeople(near)
     } catch {
       /* keep the last list */
     }
@@ -333,10 +547,20 @@ export default function Pos() {
 
   useEffect(() => {
     if (!shop) return
-    load()
+    void load()
     const t = setInterval(load, 2000)
     return () => clearInterval(t)
   }, [shop, load])
+
+  function chooseMode(m: Mode) {
+    setMode(m)
+    setJustCreated(null)
+    try {
+      localStorage.setItem(MODE_KEY, m)
+    } catch {
+      /* the choice just lasts until the page closes */
+    }
+  }
 
   const current = invoices.find((i) => i.id === selected)
 
@@ -349,10 +573,20 @@ export default function Pos() {
         <Login onLogin={setShop} />
       ) : (
         <>
-          <div className="row between" style={{ marginBottom: 12 }}>
+          <div className="till-head">
             <div>
-              <h1 style={{ margin: 0 }}>{shop.name}</h1>
-              <span className="muted small">{floorLabel(shop.floor)} · cashier screen</span>
+              <h1>{shop.name}</h1>
+              <span className="muted small">
+                {floorLabel(shop.floor)} · {people.length} nearby
+              </span>
+            </div>
+            <div className="segmented" role="group" aria-label="How bills reach customers">
+              <button className={mode === 'person' ? 'on' : ''} aria-pressed={mode === 'person'} onClick={() => chooseMode('person')}>
+                Person
+              </button>
+              <button className={mode === 'ai' ? 'on' : ''} aria-pressed={mode === 'ai'} onClick={() => chooseMode('ai')}>
+                AI auto
+              </button>
             </div>
             <button
               className="btn ghost small"
@@ -369,14 +603,13 @@ export default function Pos() {
               <NewInvoice
                 onCreated={(inv) => {
                   setSelected(inv.id)
-                  load()
+                  setJustCreated(mode === 'ai' ? inv.id : null)
+                  void load()
                 }}
               />
-              <div className="card">
-                <h2>Today's bills</h2>
-                {invoices.length === 0 ? (
-                  <p className="muted small">No bills yet.</p>
-                ) : (
+              <details className="card flat">
+                <summary>Today's bills ({invoices.length})</summary>
+                {invoices.length > 0 && (
                   <table className="table">
                     <thead>
                       <tr>
@@ -404,7 +637,7 @@ export default function Pos() {
                                 onClick={async (e) => {
                                   e.stopPropagation()
                                   await post(`/pos/invoices/${inv.id}/cancel`).catch(() => {})
-                                  load()
+                                  void load()
                                 }}
                               >
                                 Void
@@ -416,9 +649,29 @@ export default function Pos() {
                     </tbody>
                   </table>
                 )}
-              </div>
+              </details>
             </div>
-            <div>{current ? <CheckinPanel invoice={current} /> : <div className="card muted">Create or select a bill to show its check-in code.</div>}</div>
+            <div>
+              {current ? (
+                <BillPanel key={`${current.id}-${mode}`} invoice={current} mode={mode} people={people} autoAsk={justCreated === current.id} reload={load} />
+              ) : (
+                <div className="card bill-panel empty">
+                  <h2>No bill open</h2>
+                  <p className="muted small">{people.length ? `${people.length} ${people.length === 1 ? 'customer is' : 'customers are'} nearby.` : 'Customers with AirSign open appear here.'}</p>
+                  {people.length > 0 && (
+                    <ul className="list people">
+                      {people.map((p) => (
+                        <li key={p.id} className="item">
+                          <span className="row">
+                            <span className="code-chip">{p.code}</span> <strong>{p.name}</strong>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}

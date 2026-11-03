@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { del, get, post, type Intent, type Me } from '../lib/api'
-import { errorText, floorLabel, money, useApp } from '../lib/app'
+import { errorText, money, useApp } from '../lib/app'
 import { SimBadge, Spinner, TopBar } from '../components/bits'
 import BillAlerts from '../components/BillAlerts'
 import WalletCard from '../components/WalletCard'
@@ -30,15 +30,11 @@ function Welcome() {
 
   return (
     <>
-      <div className="card">
-        <h1>Pay in a shop with a move of your phone</h1>
-        <p className="muted">
-          AirSign finds the shop you are in, you approve the payment in PayPal, then you confirm it by moving your phone
-          in your own air signature. No card, no PIN, no terminal.
-        </p>
+      <div className="welcome">
+        <h1>Sign the air. You've paid.</h1>
+        <p className="muted">Your phone is the pen. Your PayPal pays the shop. No card, no PIN, no terminal.</p>
       </div>
       <form className="card" onSubmit={start}>
-        <h2>Get started</h2>
         <label className="field">
           <span>Your first name</span>
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required autoComplete="given-name" autoFocus />
@@ -46,8 +42,8 @@ function Welcome() {
         <label className="check">
           <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
           <span>
-            I agree that AirSign stores an encrypted template of my motion signature to verify my payments. Raw sensor
-            recordings are discarded, and I can delete my signature at any time.
+            AirSign keeps an encrypted template of my motion signature to check my payments. Recordings are discarded,
+            and I can delete it any time.
           </span>
         </label>
         {error && <div className="notice bad">{error}</div>}
@@ -55,8 +51,7 @@ function Welcome() {
           {busy ? <Spinner /> : 'Continue'}
         </button>
         <p className="tiny" style={{ marginTop: 12 }}>
-          This is a hackathon prototype on the PayPal sandbox. No real money moves. Your account includes a synthetic
-          payment history so the risk engine has something to compare against.
+          A prototype on the PayPal sandbox: no real money moves. Your account starts with a made-up payment history for the risk checks.
         </p>
       </form>
       <p className="center small">
@@ -92,66 +87,26 @@ function Dashboard({ me }: { me: Me }) {
   const sig = me.signature
   return (
     <>
-      <div className="card">
-        <p className="muted small" style={{ marginBottom: 4 }}>Hello, {me.user!.display_name}</p>
-        {sig ? (
-          <>
-            <h1>Ready to pay</h1>
-            <p className="muted">Walk into an AirSign shop, then tap below.</p>
-            <Link to="/pay" className="btn block">
-              Pay in a shop
-            </Link>
-          </>
-        ) : (
-          <>
-            <h1>Set up your air signature</h1>
-            <p className="muted">
-              Pick a personal movement, like drawing your initials in the air with your phone. You will repeat it 7
-              times so AirSign learns how you do it.
-            </p>
-            <Link to="/enroll" className="btn block">
-              Set up air signature
-            </Link>
-          </>
-        )}
-      </div>
-
-      {error && <div className="notice bad">{error}</div>}
-
-      {sig && <BillAlerts />}
-      {sig && <WalletCard me={me} />}
-
-      {sig && (
-        <div className="card">
-          <div className="row between">
-            <h2>Your air signature</h2>
-            {sig.simulated && <SimBadge />}
-          </div>
-          <p className="muted small">
-            {sig.repetitions} repetitions, verified with {sig.method === 'fused' ? 'DTW and the neural model' : 'dynamic time warping'}.
-            Stored encrypted.
-          </p>
-          <div className="grid2">
-            <Link to="/enroll" className="btn quiet">
-              Re-record
-            </Link>
-            <button
-              className="btn danger"
-              onClick={() => confirm('Delete your air signature? You will need to set it up again before paying.') && action(() => del<Me>('/me/signature'))}
-            >
-              Delete
-            </button>
-          </div>
+      {sig ? (
+        <BillAlerts />
+      ) : (
+        <div className="hero">
+          <p className="eyebrow">Hello, {me.user!.display_name}</p>
+          <h1>Set up your air signature</h1>
+          <p className="muted">Write your initials in the air with your phone, 7 times, the same way each time.</p>
+          <Link to="/enroll" className="btn block">
+            Set up air signature
+          </Link>
         </div>
       )}
 
-      <div className="card">
-        <h2>Recent payments</h2>
-        {payments === null ? (
-          <Spinner />
-        ) : payments.length === 0 ? (
-          <p className="muted small">No payments yet.</p>
-        ) : (
+      {error && <div className="notice bad">{error}</div>}
+
+      {sig && !me.wallet && <WalletCard me={me} />}
+
+      {payments && payments.length > 0 && (
+        <details className="card flat">
+          <summary>Recent payments</summary>
           <ul className="list">
             {payments.map((p) => (
               <li key={p.id}>
@@ -159,9 +114,7 @@ function Dashboard({ me }: { me: Me }) {
                   <span>
                     <strong>{p.shop.name}</strong>
                     <br />
-                    <span className="tiny">
-                      {floorLabel(p.shop.floor)} · {new Date(p.created_at).toLocaleString()}
-                    </span>
+                    <span className="tiny">{new Date(p.created_at).toLocaleString()}</span>
                   </span>
                   <span className="stack" style={{ textAlign: 'right' }}>
                     <strong>{money(p.amount_cents, p.currency)}</strong>
@@ -171,12 +124,35 @@ function Dashboard({ me }: { me: Me }) {
               </li>
             ))}
           </ul>
-        )}
-      </div>
+        </details>
+      )}
 
       <details className="card flat">
-        <summary>Privacy and demo settings</summary>
+        <summary>Account and privacy</summary>
         <div className="spacer" />
+        {me.wallet && <WalletCard me={me} />}
+        {sig && (
+          <div className="settings-row">
+            <div className="row between">
+              <h3 style={{ margin: 0 }}>Air signature</h3>
+              {sig.simulated && <SimBadge />}
+            </div>
+            <p className="small muted">
+              {sig.repetitions} repetitions, checked with {sig.method === 'fused' ? 'DTW and the neural network' : 'DTW'}. Stored encrypted.
+            </p>
+            <div className="grid2">
+              <Link to="/enroll" className="btn quiet small">
+                Re-record
+              </Link>
+              <button
+                className="btn danger small"
+                onClick={() => confirm('Delete your air signature? You will need to set it up again before paying.') && action(() => del<Me>('/me/signature'))}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        )}
         <p className="small muted">
           Synthetic payment history: {me.synthetic_history ? `${me.synthetic_history} made-up payments` : 'off'}. It lets the
           risk engine tell routine payments from unusual ones in the demo.
@@ -198,7 +174,8 @@ function Dashboard({ me }: { me: Me }) {
         </div>
         <p className="tiny" style={{ marginTop: 12 }}>
           PayPal: {config?.paypal_mode === 'sandbox' ? 'sandbox' : 'built-in mock (sandbox credentials not configured)'}.
-          Location is read when you tap or while bill alerts are on, and only the matched shop is kept.
+          Location is read when you tap, or while "I'm at a shop" is on. Your position is not stored. While it is on,
+          cashiers in that building see your first name and code.
         </p>
       </details>
     </>
@@ -209,7 +186,7 @@ export default function Home() {
   const { me } = useApp()
   return (
     <div className="app">
-      <TopBar links={[{ to: '/', label: 'Home' }, { to: '/how', label: 'How it works' }]} />
+      <TopBar links={[{ to: '/how', label: 'How it works' }]} />
       {me === null ? <Spinner /> : me.user ? <Dashboard me={me} /> : <Welcome />}
     </div>
   )

@@ -184,32 +184,6 @@ def test_overlong_or_empty_sentences_keep_the_template(monkeypatch):
     assert explain.explain_risk(1, ["routine"]) is None  # routine payments spend no quota
 
 
-# Bill alerts ------------------------------------------------------------------------
-
-
-def test_nearby_bills_lists_open_bills_in_the_building_only():
-    c = customer()
-    near = {"lat": SHOP_LAT, "lon": SHOP_LON, "accuracy": 20}
-    inv = open_invoice(cashier("shop_kettle"), "6.40")
-    bills = c.get("/api/bills/nearby", params=near).json()["bills"]
-    assert inv["id"] in [b["invoice"]["id"] for b in bills]
-    other = open_invoice(cashier("shop_fig"), "3.10")
-    assert other["id"] not in [b["invoice"]["id"] for b in c.get("/api/bills/nearby", params=near).json()["bills"]]
-    assert c.get("/api/bills/nearby", params={"lat": 0, "lon": 0, "accuracy": 20}).json()["bills"] == []
-    assert c.get("/api/bills/nearby", params={**near, "accuracy": 5000}).json()["bills"] == []
-
-
-def test_a_bill_someone_else_is_paying_is_not_offered():
-    payer = linked_customer()
-    other = customer("Bo")
-    inv = open_invoice(cashier("shop_kettle"), "6.45")
-    near = {"lat": SHOP_LAT, "lon": SHOP_LON, "accuracy": 20}
-    assert inv["id"] in [b["invoice"]["id"] for b in other.get("/api/bills/nearby", params=near).json()["bills"]]
-    start_with_wallet(payer, inv["id"])
-    assert inv["id"] not in [b["invoice"]["id"] for b in other.get("/api/bills/nearby", params=near).json()["bills"]]
-    assert inv["id"] in [b["invoice"]["id"] for b in payer.get("/api/bills/nearby", params=near).json()["bills"]]
-
-
 # Saved PayPal -----------------------------------------------------------------------
 
 

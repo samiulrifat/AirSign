@@ -17,13 +17,15 @@ from sqlalchemy.orm import Session
 
 from ..ai import cashier as ai_cashier
 from ..ai.gemini import GeminiUnavailable
+from ..ai.names import match_name
 from ..audit import audit
 from ..auth import POS_COOKIE, cashier, start_pos_session
 from ..config import get_settings
 from ..db import get_db
 from ..intents import TERMINAL
 from ..ratelimit import rate_limit
-from ..models import CheckinToken, Invoice, Merchant, PaymentIntent, now
+from .. import presence as nearby_customers
+from ..models import CheckinToken, Invoice, Merchant, PaymentIntent, Presence, User, now
 from ..security import check_pin, make_checkin_token
 from ..seed import catalog_for
 from .shops import invoice_view, shop_view
@@ -115,6 +117,96 @@ def create_invoice(body: InvoiceIn, merchant: Merchant = Depends(cashier), db: S
     return invoice_view(inv)
 
 
+def _customer_view(db: Session, inv: Invoice) -> dict | None:
+    if not inv.customer_id:
+        return None
+    user = db.get(User, inv.customer_id)
+    row = db.scalar(select(Presence).where(Presence.user_id == inv.customer_id))
+    return None if user is None else {"name": user.display_name, "code": row.code if row else None}
+
+
+def _open_invoice(db: Session, invoice_id: str, merchant: Merchant) -> Invoice:
+    inv = db.get(Invoice, invoice_id)
+    if inv is None or inv.merchant_id != merchant.id:
+        fail("not_found", "Invoice not found.", 404)
+    if inv.status != "OPEN":
+        fail("not_open", "That invoice is not open.", 409)
+    return inv
+
+
+def _assign(db: Session, inv: Invoice, merchant: Merchant, row: Presence) -> None:
+    active = db.scalar(
+        select(PaymentIntent.id).where(
+            PaymentIntent.invoice_id == inv.id,
+            PaymentIntent.user_id != row.user_id,
+            PaymentIntent.state.not_in(tuple(TERMINAL)),
+            PaymentIntent.expires_at > now(),
+        )
+    )
+    if active:
+        fail("in_progress", "Someone is already paying this bill.", 409)
+    inv.customer_id = row.user_id
+    inv.broadcast = False
+    audit(db, merchant.id, "invoice.sent", None, invoice=inv.id, customer=row.user_id)
+
+
+@router.get("/nearby")
+def nearby(merchant: Merchant = Depends(cashier), db: Session = Depends(get_db)):
+    """Customers with bill alerts on in this building. It can include other floors."""
+    return [nearby_customers.view(db, r) for r in nearby_customers.fresh_rows(db, merchant.building_id)]
+
+
+class SendIn(BaseModel):
+    presence_id: str | None = None  # None takes the bill back
+
+
+@router.post("/invoices/{invoice_id}/send", dependencies=[Depends(rate_limit("send_bill"))])
+def send_bill(invoice_id: str, body: SendIn, merchant: Merchant = Depends(cashier), db: Session = Depends(get_db)):
+    """Person mode: the cashier asks the name and picks the customer."""
+    inv = _open_invoice(db, invoice_id, merchant)
+    if body.presence_id is None:
+        inv.customer_id = None
+        audit(db, merchant.id, "invoice.taken_back", None, invoice=inv.id)
+    else:
+        rows = {r.id: r for r in nearby_customers.fresh_rows(db, merchant.building_id)}
+        row = rows.get(body.presence_id)
+        if row is None:
+            fail("gone", "That customer is no longer nearby.", 409)
+        _assign(db, inv, merchant, row)
+    db.commit()
+    return {**invoice_view(inv), "customer": _customer_view(db, inv)}
+
+
+class HeardIn(BaseModel):
+    heard: list[str] = Field(min_length=1, max_length=5)
+
+
+@router.post("/invoices/{invoice_id}/match-name", dependencies=[Depends(rate_limit("send_bill"))])
+def match_spoken_name(invoice_id: str, body: HeardIn, merchant: Merchant = Depends(cashier), db: Session = Depends(get_db)):
+    """AI auto mode: send on one clear match, otherwise give the cashier the likely customers."""
+    inv = _open_invoice(db, invoice_id, merchant)
+    rows = {r.id: nearby_customers.view(db, r) for r in nearby_customers.fresh_rows(db, merchant.building_id)}
+    heard = [h[:120] for h in body.heard]
+    match, likely = match_name(heard, [(i, v["name"]) for i, v in rows.items()])
+    if match is None:
+        return {"status": "choose" if likely else "nobody", "candidates": [rows[i] for i in likely], "customer": None}
+    row = db.get(Presence, match)
+    _assign(db, inv, merchant, row)
+    db.commit()
+    return {"status": "sent", "candidates": [], "customer": _customer_view(db, inv)}
+
+
+@router.post("/invoices/{invoice_id}/broadcast", dependencies=[Depends(rate_limit("send_bill"))])
+def broadcast_bill(invoice_id: str, merchant: Merchant = Depends(cashier), db: Session = Depends(get_db)):
+    """Tell everyone nearby a bill is ready at this shop. They see the shop only, until they open it."""
+    inv = _open_invoice(db, invoice_id, merchant)
+    inv.customer_id = None
+    inv.broadcast = True
+    audit(db, merchant.id, "invoice.broadcast", None, invoice=inv.id)
+    db.commit()
+    return {**invoice_view(inv), "customer": None}
+
+
 @router.get("/invoices")
 def list_invoices(merchant: Merchant = Depends(cashier), db: Session = Depends(get_db)):
     rows = db.scalars(
@@ -128,6 +220,8 @@ def list_invoices(merchant: Merchant = Depends(cashier), db: Session = Depends(g
         out.append(
             {
                 **invoice_view(inv),
+                "broadcast": inv.broadcast,
+                "customer": _customer_view(db, inv),
                 "payment": None
                 if latest is None
                 else {"state": latest.state, "tier": latest.risk_tier, "simulated": latest.simulated, "webhook_confirmed": latest.webhook_confirmed},

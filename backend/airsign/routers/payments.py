@@ -88,7 +88,7 @@ class Location(BaseModel):
 
 class IntentIn(BaseModel):
     invoice_id: str
-    confirmed_by: str = Field(pattern="^(popup|list|code|qr)$")
+    confirmed_by: str = Field(pattern="^(popup|list|code|qr|sent)$")
     location: Location | None = None
     simulated_location: bool = False
     checkin_pass: str | None = None

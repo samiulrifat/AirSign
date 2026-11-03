@@ -52,11 +52,19 @@ def get_db() -> Iterator[Session]:
         db.close()
 
 
+NEW_COLUMNS = [
+    ("payment_intents", "funding", "VARCHAR(8) DEFAULT 'order'"),
+    ("invoices", "customer_id", "VARCHAR"),
+    ("invoices", "broadcast", "BOOLEAN DEFAULT FALSE"),
+]
+
+
 def init_db() -> None:
     from . import models  # noqa: F401  (registers tables)
 
     Base.metadata.create_all(engine)
     # create_all never changes a table that already exists, such as on a deployed database.
-    if "funding" not in {c["name"] for c in inspect(engine).get_columns("payment_intents")}:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE payment_intents ADD COLUMN funding VARCHAR(8) DEFAULT 'order'"))
+    for table, column, ddl in NEW_COLUMNS:
+        if column not in {c["name"] for c in inspect(engine).get_columns(table)}:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))

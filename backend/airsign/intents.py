@@ -118,6 +118,8 @@ def create_intent(
         raise IntentError("not_enrolled", "Set up your air signature before paying.", 409)
     if invoice.status != "OPEN":
         raise IntentError("invoice_closed", "This invoice is no longer open.", 409)
+    if invoice.customer_id not in (None, user.id):
+        raise IntentError("not_your_bill", "The cashier sent this bill to someone else.", 403)
 
     active = db.scalars(
         select(PaymentIntent).where(PaymentIntent.invoice_id == invoice.id, PaymentIntent.state.not_in(tuple(TERMINAL)))
@@ -288,6 +290,10 @@ def cancel(db: Session, intent: PaymentIntent, user: User) -> None:
     if intent.state not in PRE_SIGNOFF:
         raise IntentError("bad_state", "This payment can no longer be cancelled.", 409)
     transition(db, intent, "CANCELLED", user.id)
+    # A bill sent to this customer goes back to the cashier, who can send it to someone else.
+    invoice = db.get(Invoice, intent.invoice_id)
+    if invoice.customer_id == user.id:
+        invoice.customer_id = None
     db.commit()
 
 

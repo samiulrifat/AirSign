@@ -38,15 +38,15 @@ export default function WalletCard({ me }: { me: Me }) {
   const remove = () => run(async () => setMe(await del<Me>('/wallet')))
 
   return (
-    <div className="card flat">
+    <div className={me.wallet ? 'settings-row' : 'card flat'}>
       <div className="row between">
-        <h3 style={{ margin: 0 }}>PayPal</h3>
+        <h3 style={{ margin: 0 }}>{me.wallet ? 'PayPal' : 'Skip the PayPal window'}</h3>
         {me.wallet && <span className="badge ok">Saved</span>}
       </div>
       {me.wallet ? (
         <>
           <p className="small muted" style={{ margin: '8px 0 12px' }}>
-            {me.wallet.email ?? 'Your PayPal account'} is charged only after your air signature passes. Bills over $200 still open PayPal.
+            {me.wallet.email ?? 'Your PayPal account'} is charged only after your signature passes. Bills over $200 still open PayPal.
           </p>
           <button className="btn quiet small" disabled={busy} onClick={remove}>
             Remove saved PayPal
@@ -63,9 +63,9 @@ export default function WalletCard({ me }: { me: Me }) {
       ) : (
         <>
           <p className="small muted" style={{ margin: '8px 0 12px' }}>
-            Approve once in PayPal. After that, your air signature is all a payment needs.
+            Approve once. After that, your air signature is all a payment needs.
           </p>
-          <button className="btn block" disabled={busy} onClick={start}>
+          <button className="btn quiet block" disabled={busy} onClick={start}>
             {busy ? <Spinner /> : 'Save my PayPal'}
           </button>
         </>

@@ -26,6 +26,18 @@ def app_client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def clean_counter(app_client):
+    """Open bills and nearby customers from earlier tests would change who and what later ones find."""
+    from airsign.db import SessionLocal
+    from airsign.models import Invoice, Presence
+
+    with SessionLocal() as db:
+        db.query(Invoice).filter(Invoice.status == "OPEN").update({Invoice.status: "CANCELLED"})
+        db.query(Presence).delete()
+        db.commit()
+
+
 def new_client() -> TestClient:
     c = TestClient(app)
     c.__enter__()

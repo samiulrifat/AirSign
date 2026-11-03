@@ -12,7 +12,7 @@ from ..audit import audit
 from ..auth import SESSION_COOKIE, customer, optional_customer, start_session
 from ..config import get_settings
 from ..db import get_db
-from ..models import Device, EnrollmentSession, PaymentHistory, SignatureTemplate, User, now
+from ..models import Device, EnrollmentSession, Invoice, PaymentHistory, SignatureTemplate, User, now
 from ..wallets import active_wallet, forget_wallet
 from ..paypal.gateway import get_gateway
 from ..ratelimit import rate_limit
@@ -131,6 +131,7 @@ def delete_me(response: Response, session=Depends(customer), db: Session = Depen
     user, _ = session
     biometrics.delete_signature(db, user.id)
     forget_wallet(db, user.id)
+    db.query(Invoice).filter(Invoice.customer_id == user.id).update({Invoice.customer_id: None})
     audit(db, user.id, "user.deleted")
     db.delete(user)
     db.commit()
