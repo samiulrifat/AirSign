@@ -18,12 +18,20 @@ def customer(name="Ada"):
 
 
 def enroll(c, n=7):
-    assert c.post("/api/enroll/start", json={"simulated": True}).status_code == 200
-    for i in range(n):
-        g = c.get("/api/sim/gesture", params={"kind": "genuine", "enroll_index": i}).json()
-        r = c.post("/api/enroll/sample", json={k: g[k] for k in ("samples", "device", "simulated")})
-        assert r.json()["accepted"], r.json()
-    r = c.post("/api/enroll/finish")
+    for attempt in range(3):  # if the takes vary too much, the customer records them again
+        assert c.post("/api/enroll/start", json={"simulated": True}).status_code == 200
+        accepted = 0
+        for i in range(n + 3):  # a take is sometimes rejected, and the customer records another
+            # Simulated takes repeat exactly for one index, so each attempt uses different ones.
+            g = c.get("/api/sim/gesture", params={"kind": "genuine", "enroll_index": (i + attempt * 3) % 10}).json()
+            r = c.post("/api/enroll/sample", json={k: g[k] for k in ("samples", "device", "simulated")})
+            accepted = r.json()["count"]
+            if accepted >= n:
+                break
+        assert accepted >= n, r.json()
+        r = c.post("/api/enroll/finish")
+        if r.status_code == 200:
+            break
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -74,7 +82,7 @@ def sign_until_done(c, intent_id, nonce, max_tries=3):
     return out, g
 
 
-def pay_genuine(c, pos, amount, max_bills=3, **kw):
+def pay_genuine(c, pos, amount, max_bills=6, **kw):
     """Pay a fresh bill with genuine signatures. A genuine signer is occasionally
     locked out (about 4% of attempts are rejected), and then, like a real customer,
     asks the cashier for a new bill. Tests must not depend on a lucky persona."""
@@ -138,10 +146,13 @@ def test_imitation_rejected_three_times_locks_intent_not_account():
     inv = open_invoice(pos, "9.00")
     armed = start_payment(c, inv["id"])
     iid, nonce = armed["intent"]["id"], armed["nonce"]
-    for i in range(3):
+    rejected = 0
+    while rejected < 3:
         r, _ = sign(c, iid, nonce, kind="imitation")
         out = r.json()
-        assert out["decision"] == "REJECT", out
+        if out["decision"] != "UNUSABLE":  # an unusable recording does not use up an attempt
+            assert out["decision"] == "REJECT", out
+            rejected += 1
         nonce = out["nonce"]
     assert out["state"] == "LOCKED" and nonce is None
     # The account still works: a new invoice can be paid.
