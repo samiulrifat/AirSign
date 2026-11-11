@@ -15,7 +15,7 @@ from ..intents import TERMINAL
 from ..models import Building, Invoice, Merchant, PaymentIntent, now
 from ..ratelimit import rate_limit
 from ..shops import MAX_ACCURACY_M
-from .shops import OPEN_INVOICE_WINDOW, _nearest_building, checkin_pass_merchant, invoice_view, shop_view
+from .shops import OPEN_INVOICE_WINDOW, buildings_in_range, checkin_pass_merchant, invoice_view, shop_view
 
 router = APIRouter(prefix="/api")
 
@@ -42,19 +42,27 @@ class PresenceIn(BaseModel):
     simulated: bool = False
     # From typing or scanning the code on the cashier's screen. Works without location.
     checkin_pass: str | None = None
+    # The customer picked the shop themselves because location could not find it.
+    shop_id: str | None = Field(default=None, max_length=64)
 
 
-def _building(db: Session, body: PresenceIn, user_id: str) -> tuple[Building | None, str | None]:
-    """The building this customer is in, or why it could not be found."""
+def _buildings(db: Session, body: PresenceIn, user_id: str) -> tuple[list[Building], str, Merchant | None, str | None]:
+    """The buildings this customer could be in, how we know, the shop they chose, and why none was found."""
     merchant_id = checkin_pass_merchant(body.checkin_pass, user_id)
     if merchant_id:
-        return db.get(Building, db.get(Merchant, merchant_id).building_id), None
+        m = db.get(Merchant, merchant_id)
+        return [db.get(Building, m.building_id)], "code", None, None
+    if body.shop_id:
+        m = db.get(Merchant, body.shop_id)
+        if m is None:
+            fail("not_found", "Shop not found.", 404)
+        return [db.get(Building, m.building_id)], "chosen", m, None
     if body.lat is None or body.lon is None or body.accuracy is None:
-        return None, "no_location"
+        return [], "location", None, "no_location"
     if body.accuracy > MAX_ACCURACY_M:
-        return None, "low_accuracy"
-    best = _nearest_building(db, body.lat, body.lon, body.accuracy)
-    return (best[1], None) if best else (None, "no_shop")
+        return [], "location", None, "low_accuracy"
+    found = [b for _, b in buildings_in_range(db, body.lat, body.lon, body.accuracy)]
+    return found, "location", None, None if found else "no_shop"
 
 
 @router.post("/presence", dependencies=[Depends(rate_limit("bills"))])
@@ -62,11 +70,12 @@ def check_in(body: PresenceIn, session=Depends(customer), db: Session = Depends(
     """Called every few seconds while alerts are on. Stores the building, not the position.
 
     `bills` were sent to this customer. `ready` were announced to everyone nearby, so
-    they show only the shop until the customer opens one.
+    they show only the shop until the customer opens one. Nothing else reaches the
+    phone: choosing a shop never hands over a bill, the cashier still sends it.
     """
     user, _ = session
-    building, reason = _building(db, body, user.id)
-    row = svc.touch(db, user.id, building.id, body.simulated) if building else None
+    found, via, chosen, reason = _buildings(db, body, user.id)
+    row = svc.touch(db, user.id, [b.id for b in found], body.simulated, via, chosen.id if chosen else None) if found else None
 
     mine = db.execute(
         select(Invoice, Merchant)
@@ -75,12 +84,12 @@ def check_in(body: PresenceIn, session=Depends(customer), db: Session = Depends(
         .order_by(Invoice.created_at.desc())
     ).all()
     announced = []
-    if building:
+    if found:
         announced = db.execute(
             select(Invoice, Merchant)
             .join(Merchant, Invoice.merchant_id == Merchant.id)
             .where(
-                Merchant.building_id == building.id,
+                Merchant.building_id.in_([b.id for b in found]),
                 Invoice.broadcast.is_(True),
                 Invoice.customer_id.is_(None),
                 Invoice.status == "OPEN",
@@ -89,8 +98,18 @@ def check_in(body: PresenceIn, session=Depends(customer), db: Session = Depends(
             .order_by(Invoice.created_at.desc())
         ).all()
     busy = busy_with_someone_else(db, [i.id for i, _ in announced], user.id)
+    you = None
+    if row is not None:
+        you = {
+            "name": user.display_name,
+            "code": row.code,
+            "building": " or ".join(b.name for b in found),
+            "building_ids": [b.id for b in found],
+            "via": via,
+            "shop": shop_view(chosen) if chosen else None,
+        }
     out = {
-        "you": None if row is None else {"name": user.display_name, "code": row.code, "building": building.name},
+        "you": you,
         "reason": reason,
         "bills": [{"shop": shop_view(m), "invoice": invoice_view(i)} for i, m in mine],
         "ready": [{"shop": shop_view(m), "invoice_id": i.id} for i, m in announced if i.id not in busy],

@@ -38,8 +38,8 @@ export default function Checkin() {
         ) : error ? (
           <>
             <div className="notice bad">{error}</div>
-            <Link to="/pay" className="btn block">
-              Find the shop another way
+            <Link to="/" className="btn block">
+              Choose the shop instead
             </Link>
           </>
         ) : (

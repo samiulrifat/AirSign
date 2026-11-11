@@ -96,11 +96,20 @@ def seed_shops(db: Session) -> None:
     db.commit()
 
 
-def move_building(db: Session, building_id: str, lat: float, lon: float) -> Building:
-    """Simulation helper: place a demo building (and its shops) where the tester stands."""
+MAX_PLACED_RADIUS_M = 1000.0
+
+
+def move_building(db: Session, building_id: str, lat: float, lon: float, accuracy: float | None = None) -> Building:
+    """Simulation helper: place a demo building (and its shops) where the tester stands.
+
+    `accuracy` comes from the till: a laptop often knows its place only to a few hundred
+    meters, so the building grows to cover that, up to a kilometer.
+    """
     b = db.get(Building, building_id)
     dlat, dlon = lat - b.lat, lon - b.lon
     b.lat, b.lon = lat, lon
+    base = next((x["radius_m"] for x in BUILDINGS if x["id"] == building_id), b.radius_m)
+    b.radius_m = base if accuracy is None else max(base, min(accuracy, MAX_PLACED_RADIUS_M))
     for m in db.scalars(select(Merchant).where(Merchant.building_id == building_id)):
         m.lat += dlat
         m.lon += dlon

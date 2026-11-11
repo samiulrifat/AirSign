@@ -27,7 +27,7 @@ from ..ratelimit import rate_limit
 from .. import presence as nearby_customers
 from ..models import CheckinToken, Invoice, Merchant, PaymentIntent, Presence, User, now
 from ..security import check_pin, make_checkin_token
-from ..seed import catalog_for
+from ..seed import catalog_for, move_building
 from .shops import invoice_view, shop_view
 
 router = APIRouter(prefix="/api/pos")
@@ -235,9 +235,15 @@ def catalog(merchant: Merchant = Depends(cashier)):
     return [{"name": c["name"], "price": c["price"]} for c in catalog_for(merchant.category)]
 
 
+class CartLine(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    qty: int = Field(ge=1, le=99)
+
+
 class AiBillIn(BaseModel):
     text: str | None = Field(default=None, max_length=300)
     image: str | None = Field(default=None, max_length=MAX_IMAGE_CHARS)  # a data: URL
+    cart: list[CartLine] = Field(default_factory=list, max_length=30)  # the bill on screen, so "remove the tea" makes sense
 
 
 def _image(data_url: str) -> tuple[str, bytes]:
@@ -252,18 +258,53 @@ def _image(data_url: str) -> tuple[str, bytes]:
 
 @router.post("/ai-bill", dependencies=[Depends(rate_limit("ai_bill"))])
 def ai_bill(body: AiBillIn, merchant: Merchant = Depends(cashier), db: Session = Depends(get_db)):
-    """Draft bill lines from a photo or a description. Creates nothing: the cashier checks it first."""
+    """Changes to the bill on screen, from a photo or a typed or spoken instruction. Creates nothing."""
+    return _draft(body, merchant, db, scan=False)
+
+
+@router.post("/ai-scan", dependencies=[Depends(rate_limit("ai_scan"))])
+def ai_scan(body: AiBillIn, merchant: Merchant = Depends(cashier), db: Session = Depends(get_db)):
+    """One frame from the live camera: what is on the counter right now. The screen works out what is new."""
+    if not body.image:
+        fail("empty", "No camera frame was sent.")
+    return _draft(body, merchant, db, scan=True)
+
+
+def _draft(body: AiBillIn, merchant: Merchant, db: Session, scan: bool) -> dict:
     text = (body.text or "").strip() or None
     if not text and not body.image:
         fail("empty", "Describe the order or add a photo.")
     image = _image(body.image) if body.image else None
+    cart = [c.model_dump() for c in body.cart]
     try:
-        draft = ai_cashier.draft_bill(merchant.category, text, image)
+        draft = ai_cashier.draft_bill(merchant.category, None if image else text, image, cart=cart, scan=scan)
     except GeminiUnavailable:
         fail("ai_unavailable", "The AI could not read the photo right now. Type the items instead.", 503)
-    audit(db, merchant.id, "pos.ai_bill", None, source=draft["source"], photo=image is not None, lines=len(draft["lines"]))
-    db.commit()
+    if not scan:  # a scan sends a frame every couple of seconds, so it is not logged one by one
+        audit(db, merchant.id, "pos.ai_bill", None, source=draft["source"], photo=image is not None, ops=len(draft["ops"]), clear=draft["clear"])
+        db.commit()
     return draft
+
+
+class PlaceIn(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    accuracy: float = Field(gt=0)
+
+
+@router.post("/sim/place-building", dependencies=[Depends(rate_limit("send_bill"))])
+def place_building(body: PlaceIn, merchant: Merchant = Depends(cashier), db: Session = Depends(get_db)):
+    """Demo only: move this shop's building to where the till is, so phones at the counter find it.
+
+    The demo buildings have made-up addresses, so without this a tester's phone is never
+    inside one. A rough laptop location widens the building to match.
+    """
+    if not get_settings().allow_simulation:
+        fail("simulation_disabled", "Simulation is turned off on this server.", 403)
+    b = move_building(db, merchant.building_id, body.lat, body.lon, accuracy=body.accuracy)
+    audit(db, merchant.id, "sim.building_placed", None, building=b.id)
+    db.commit()
+    return {"id": b.id, "name": b.name, "radius_m": b.radius_m}
 
 
 @router.post("/invoices/{invoice_id}/cancel")

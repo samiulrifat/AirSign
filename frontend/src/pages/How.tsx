@@ -10,9 +10,18 @@ export default function How() {
       <div className="card">
         <h1>How AirSign works</h1>
         <ol className="muted" style={{ paddingLeft: 18 }}>
-          <li>You open AirSign and tap "I'm at a shop", or scan the code on the cashier's screen. The cashier sees your first name.</li>
-          <li>The cashier snaps a photo of the items or says the order, and the AI drafts the bill for the cashier to check.</li>
-          <li>The cashier sends the bill to you by name. In AI auto mode a voice assistant takes the order, reads it back, asks your name and sends it.</li>
+          <li>
+            You open AirSign and tap "I'm at a shop". Your location finds the building. If it can't, you choose the shop
+            yourself or scan the code on the cashier's screen. Either way the cashier sees your first name.
+          </li>
+          <li>
+            The cashier builds the bill: shows each product to the camera, says or types the order, or taps items. It all
+            adds up on one bill, and saying "remove the tea" or "clear all" changes it.
+          </li>
+          <li>
+            The cashier sends the bill to you by name. In AI auto mode a voice assistant reads the bill back, asks your
+            name and sends it. Only you can pay a bill sent to you.
+          </li>
           <li>Your phone buzzes. If you saved your PayPal, you go straight to signing. Otherwise, or for bills over $200, you approve in PayPal first. Nothing is charged yet.</li>
           <li>A risk engine decides how strict the check is.</li>
           <li>You hold the phone still, then sign in the air. No need to touch the screen: the app starts and stops recording by itself and draws your signature as ink.</li>
@@ -23,12 +32,17 @@ export default function How() {
         <h2>Where the AI is</h2>
         <ul className="muted small" style={{ paddingLeft: 18 }}>
           <li>
-            <strong>AI cashier (Google Gemini):</strong> reads a counter photo or a spoken order and matches it to the shop's
-            catalog. It only picks items and quantities: prices come from the catalog, and the cashier confirms the bill.
+            <strong>AI cashier (Google Gemini):</strong> a live camera adds each product shown to it, like a barcode
+            scanner without barcodes, and spoken or typed changes (add, remove, change, clear) edit the same bill. It only
+            picks items and quantities: prices come from the catalog, and the cashier confirms the bill.
           </li>
           <li>
             <strong>Name matching:</strong> finds the spoken name among the people nearby, allowing for spellings like
             Rahim and Raheem. It sends only on one clear match, and runs on our server, not on Gemini.
+          </li>
+          <li>
+            <strong>Shop ranking:</strong> if you choose the shop yourself, it orders the shops by how likely you are in
+            each, from your location, floor, past visits, opening hours and which shop just opened a bill.
           </li>
           <li>
             <strong>Risk reasons (Google Gemini):</strong> rewrites why a payment needs a stricter check in plain words. The
@@ -47,17 +61,15 @@ export default function How() {
             <strong>Risk engine:</strong> transparent rules plus an isolation forest on your payment history choose
             between one signature, a stricter one, or two.
           </li>
-          <li>
-            <strong>Shop ranking:</strong> scores the shops in a building from location, floor hint, opening hours, your
-            visits and which shop just opened a bill.
-          </li>
         </ul>
       </div>
       <div className="card">
         <h2>The one rule</h2>
         <p className="muted small">
           The amount and shop come from the bill stored on the server, never from the phone, and the only code path that
-          can capture money is a passing sign-off. Every attempt is logged without raw sensor data.
+          can capture money is a passing sign-off. A bill can be paid only by the person the cashier sent it to, the
+          person who scanned its code, or, when the cashier alerts everyone nearby, the first to open it. Every attempt is
+          logged without raw sensor data.
         </p>
       </div>
       <div className="card">
@@ -65,8 +77,8 @@ export default function How() {
         <p className="muted small">
           A motion signature is a behavioral biometric: one factor, not a replacement for Face ID. A close observer
           might copy a simple gesture, and signing while walking is harder. This prototype runs on the PayPal sandbox
-          and makes no compliance claims. Photos and typed orders go to Google Gemini; motion data, customer names and
-          locations never do. The browser's speech recognition may send what the till hears to its maker, such as Google.
+          and makes no compliance claims. Camera frames and typed or spoken orders go to Google Gemini; motion data, customer
+          names and locations never do. The browser's speech recognition may send what the till hears to its maker, such as Google.
         </p>
       </div>
       <Link to="/" className="btn block">

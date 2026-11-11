@@ -209,12 +209,8 @@ export default function Enroll() {
             Kept {report?.kept} repetitions{report?.dropped ? `, set aside ${report.dropped} that differed from the rest` : ''}. Your
             personal threshold is set from how much your own repetitions vary.
           </p>
-          <Link to="/pay" className="btn block">
+          <Link to="/" className="btn block">
             Pay in a shop
-          </Link>
-          <div className="spacer" />
-          <Link to="/" className="btn ghost block">
-            Home
           </Link>
         </div>
       )}

@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import audit
@@ -49,13 +49,19 @@ def buildings(db: Session = Depends(get_db)):
     return out
 
 
-def _nearest_building(db: Session, lat: float, lon: float, accuracy: float) -> tuple[float, Building] | None:
-    best = None
+def buildings_in_range(db: Session, lat: float, lon: float, accuracy: float) -> list[tuple[float, Building]]:
+    """Every building this position could be in, nearest first."""
+    found = []
     for b in db.scalars(select(Building)):
         d = haversine_m(lat, lon, b.lat, b.lon)
-        if d <= b.radius_m + accuracy and (best is None or d < best[0]):
-            best = (d, b)
-    return best
+        if d <= b.radius_m + accuracy:
+            found.append((d, b))
+    return sorted(found, key=lambda x: x[0])
+
+
+def _nearest_building(db: Session, lat: float, lon: float, accuracy: float) -> tuple[float, Building] | None:
+    found = buildings_in_range(db, lat, lon, accuracy)
+    return found[0] if found else None
 
 
 @router.get("/shops/nearby")
@@ -129,7 +135,8 @@ def open_invoices(shop_id: str, session=Depends(customer), db: Session = Depends
             Invoice.merchant_id == shop_id,
             Invoice.status == "OPEN",
             Invoice.created_at >= now() - LISTED_INVOICE_WINDOW,
-            or_(Invoice.customer_id.is_(None), Invoice.customer_id == session[0].id),
+            # Only bills the cashier sent to this customer. Anyone else's bill stays private.
+            Invoice.customer_id == session[0].id,
         )
         .order_by(Invoice.created_at.desc())
     ).all()
@@ -179,12 +186,18 @@ def checkin(body: CheckinIn, session=Depends(customer), db: Session = Depends(ge
     row.used_at = now()
     merchant = db.get(Merchant, row.merchant_id)
     invoice = db.get(Invoice, row.invoice_id) if row.invoice_id else None
+    if invoice and (invoice.status != "OPEN" or invoice.customer_id not in (None, user.id)):
+        invoice = None
+    if invoice:
+        # The cashier showed this bill's code to the person at the counter: it is theirs now.
+        invoice.customer_id = user.id
+        invoice.broadcast = False
     exp = int(time.time()) + CHECKIN_PASS_TTL_S
-    audit(db, user.id, "checkin.verified", None, shop=merchant.id, via="token" if body.token else "code")
+    audit(db, user.id, "checkin.verified", None, shop=merchant.id, via="token" if body.token else "code", invoice=invoice.id if invoice else None)
     db.commit()
     return {
         "shop": shop_view(merchant),
-        "invoice": invoice_view(invoice) if invoice and invoice.status == "OPEN" and invoice.customer_id in (None, user.id) else None,
+        "invoice": invoice_view(invoice) if invoice else None,
         "checkin_pass": sign_value(f"{user.id}|{merchant.id}|{exp}", "checkin"),
     }
 

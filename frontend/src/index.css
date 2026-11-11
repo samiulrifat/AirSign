@@ -1243,3 +1243,65 @@ code,
     animation: none;
   }
 }
+
+/* A link-looking button, for secondary choices under a main action. */
+button.text-link {
+  width: 100%;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 0.92rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.row > button.text-link {
+  width: auto;
+  flex: 1;
+}
+
+/* Live camera at the till: stays open and adds each product shown to it. */
+.scanner {
+  margin-top: 10px;
+}
+.scanner-view {
+  position: relative;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #000;
+  aspect-ratio: 4 / 3;
+  max-height: 360px;
+}
+.scanner-view video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.scanner-added {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--ok-soft);
+  color: var(--ok);
+  font-weight: 600;
+  font-size: 0.92rem;
+  text-align: center;
+}
+.scanner-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+/* The shop the ranker thinks you are in. */
+.list .item.likely {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}

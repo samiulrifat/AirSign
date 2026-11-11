@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { del, get, post, type Building, type Invoice, type Shop } from '../lib/api'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { del, get, post, type Building, type Invoice, type Nearby, type Shop } from '../lib/api'
 import { errorText, floorLabel, money, useApp } from '../lib/app'
 import { prompt } from '../lib/speech'
 import { cue, unlockFeedback } from '../lib/feedback'
@@ -10,7 +10,8 @@ import { DemoControls, SimBadge, Spinner } from './bits'
 type Bill = { shop: Shop; invoice: Invoice }
 type Ready = { shop: Shop; invoice_id: string }
 type Position = { lat: number; lon: number; accuracy: number }
-type CheckIn = { you: { name: string; code: string; building: string } | null; reason: 'no_shop' | 'low_accuracy' | 'no_location' | null; bills: Bill[]; ready: Ready[] }
+type You = { name: string; code: string; building: string; building_ids: string[]; via: 'location' | 'code' | 'chosen'; shop: Shop | null }
+type CheckIn = { you: You | null; reason: 'no_shop' | 'low_accuracy' | 'no_location' | null; bills: Bill[]; ready: Ready[] }
 type Joined = { invoice: Invoice | null; checkin_pass: string; shop: Shop }
 
 /** Passed to the payment page, which goes straight from the bill to signing. */
@@ -19,22 +20,93 @@ export type BillStart = Bill & { location: Position | null; simulated: boolean; 
 const POLL_MS = 3000
 const REMEMBER = 'airsign.bill-alerts'
 const JOIN_PASS = 'airsign.join-pass'
+const CHOSEN = 'airsign.chosen-shop'
 
-function savedPass(): string | null {
+function saved(key: string): string | null {
   try {
-    return sessionStorage.getItem(JOIN_PASS)
+    return sessionStorage.getItem(key)
   } catch {
     return null
   }
 }
 
-function savePass(value: string | null) {
+function save(key: string, value: string | null) {
   try {
-    if (value) sessionStorage.setItem(JOIN_PASS, value)
-    else sessionStorage.removeItem(JOIN_PASS)
+    if (value) sessionStorage.setItem(key, value)
+    else sessionStorage.removeItem(key)
   } catch {
     /* it just lasts until the page closes */
   }
+}
+
+function savedShop(): Shop | null {
+  try {
+    return JSON.parse(saved(CHOSEN) ?? 'null') as Shop | null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Every shop, building by building. With a location, the shop ranker (distance, floor,
+ * your visits, opening hours, time of day, and which shop just opened a bill) orders the
+ * shops by how likely you are in each, and marks the most likely one.
+ */
+function ShopChooser({ buildings, likely, position, onPick, onBack }: { buildings: Building[]; likely: string[]; position: Position | null; onPick: (s: Shop) => void; onBack: () => void }) {
+  const [ranked, setRanked] = useState<Extract<Nearby, { status: 'ok' }> | null>(null)
+
+  useEffect(() => {
+    if (!position) return
+    const q = new URLSearchParams({ lat: String(position.lat), lon: String(position.lon), accuracy: String(Math.max(1, position.accuracy)) })
+    get<Nearby>(`/shops/nearby?${q}`)
+      .then((r) => setRanked(r.status === 'ok' ? r : null))
+      .catch(() => {})
+  }, [position])
+
+  const first = ranked?.building.id
+  const ordered = [...buildings].sort((a, b) => {
+    const score = (x: Building) => (x.id === first ? 2 : likely.includes(x.id) ? 1 : 0)
+    return score(b) - score(a)
+  })
+  const odds = new Map(ranked?.shops.map((s) => [s.id, s.probability ?? 0]) ?? [])
+
+  return (
+    <div className="card">
+      <h2>Which shop are you at?</h2>
+      <p className="muted small">Your first name goes on that shop's list. The cashier still sends the bill to you, so nobody else's bill reaches you.</p>
+      {buildings.length === 0 && <Spinner />}
+      {ordered.map((b) => (
+        <div key={b.id} style={{ marginTop: 10 }}>
+          <p className="tiny">{b.name}</p>
+          <ul className="list">
+            {[...b.shops]
+              .sort((x, y) => (odds.get(y.id) ?? -1) - (odds.get(x.id) ?? -1) || y.floor - x.floor)
+              .map((s) => (
+                <li key={s.id}>
+                  <button className={`item${ranked?.suggestion === s.id ? ' likely' : ''}`} onClick={() => onPick(s)}>
+                    <span className="row">
+                      <span className="floor">{s.floor}F</span>
+                      <span>
+                        {s.name}
+                        <br />
+                        <span className="tiny">
+                          {s.open_now === false ? 'Closed now' : s.category}
+                          {odds.has(s.id) && ` · ${Math.round((odds.get(s.id) ?? 0) * 100)}% likely`}
+                        </span>
+                      </span>
+                    </span>
+                    {ranked?.suggestion === s.id ? <span className="badge accent">Most likely</span> : <span aria-hidden="true">›</span>}
+                  </button>
+                </li>
+              ))}
+          </ul>
+        </div>
+      ))}
+      <button className="btn ghost small" style={{ marginTop: 8 }} onClick={onBack}>
+        Back
+      </button>
+    </div>
+  )
 }
 
 function remembered(): boolean {
@@ -58,11 +130,13 @@ export default function BillAlerts() {
   const { config } = useApp()
   const navigate = useNavigate()
   const joinedByScan = (useLocation().state as { joined?: string } | null)?.joined ?? null
-  const [joinPass, setJoinPass] = useState<string | null>(joinedByScan ?? savedPass())
+  const [joinPass, setJoinPass] = useState<string | null>(joinedByScan ?? saved(JOIN_PASS))
+  const [chosen, setChosen] = useState<Shop | null>(joinedByScan ? null : savedShop())
+  const [choosing, setChoosing] = useState(false)
   const [code, setCode] = useState('')
   const [joining, setJoining] = useState(false)
   const [offline, setOffline] = useState(false)
-  const [on, setOn] = useState(joinPass !== null)
+  const [on, setOn] = useState(joinPass !== null || chosen !== null)
   const [position, setPosition] = useState<Position | null>(null)
   const [simulated, setSimulated] = useState(false)
   const [state, setState] = useState<CheckIn | null>(null)
@@ -73,8 +147,8 @@ export default function BillAlerts() {
   const announced = useRef(new Set<string>())
 
   useEffect(() => {
-    if (config?.allow_simulation) get<Building[]>('/buildings').then(setBuildings).catch(() => {})
-  }, [config?.allow_simulation])
+    get<Building[]>('/buildings').then(setBuildings).catch(() => {})
+  }, [])
 
   // Turned on earlier and location is already allowed: resume without asking again.
   useEffect(() => {
@@ -86,8 +160,12 @@ export default function BillAlerts() {
   }, [])
 
   useEffect(() => {
-    savePass(joinPass)
+    save(JOIN_PASS, joinPass)
   }, [joinPass])
+
+  useEffect(() => {
+    save(CHOSEN, chosen ? JSON.stringify(chosen) : null)
+  }, [chosen])
 
   // A locked phone stops checking in, so keep the screen on while waiting for a bill.
   useEffect(() => {
@@ -110,9 +188,9 @@ export default function BillAlerts() {
   }, [on])
 
   useEffect(() => {
-    if (!on || simulated || joinPass) return
+    if (!on || simulated || joinPass || chosen) return
     if (!navigator.geolocation) {
-      setError('This browser cannot share location. Use the code on the cashier screen instead.')
+      setError('This browser cannot share location. Choose your shop, or use the code on the cashier screen.')
       return
     }
     const id = navigator.geolocation.watchPosition(
@@ -121,18 +199,19 @@ export default function BillAlerts() {
         setPosition({ lat: p.coords.latitude, lon: p.coords.longitude, accuracy: Math.max(1, p.coords.accuracy) })
       },
       (e) => {
-        if (e.code === e.PERMISSION_DENIED) setError('Location is off, so the cashier cannot see you. Use the code on the cashier screen instead.')
+        if (e.code === e.PERMISSION_DENIED) setError('Location is off. Choose your shop below, or use the code on the cashier screen.')
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 },
     )
     return () => navigator.geolocation.clearWatch(id)
-  }, [on, simulated, joinPass])
+  }, [on, simulated, joinPass, chosen])
 
   useEffect(() => {
-    if (!on || (!position && !joinPass)) return
+    if (!on || (!position && !joinPass && !chosen)) return
     let stop = false
     const check = async () => {
-      const r = await post<CheckIn>('/presence', joinPass ? { checkin_pass: joinPass } : { ...position, simulated }).catch(() => null)
+      const body = joinPass ? { checkin_pass: joinPass } : chosen ? { shop_id: chosen.id } : { ...position, simulated }
+      const r = await post<CheckIn>('/presence', body).catch(() => null)
       if (stop) return
       setOffline(!r)
       if (!r) return
@@ -159,7 +238,7 @@ export default function BillAlerts() {
       stop = true
       clearInterval(t)
     }
-  }, [on, position, simulated, joinPass])
+  }, [on, position, simulated, joinPass, chosen])
 
   async function joinWithCode(e: React.FormEvent) {
     e.preventDefault()
@@ -175,6 +254,7 @@ export default function BillAlerts() {
       unlockFeedback()
       setPosition(null)
       setSimulated(false)
+      setChosen(null)
       setJoinPass(r.checkin_pass)
       setOn(true)
     } catch (err) {
@@ -199,9 +279,23 @@ export default function BillAlerts() {
     void askNotifications()
     setSimulated(false)
     setPosition(null)
+    setChosen(null)
     setError(null)
     setOn(true)
     remember(true)
+  }
+
+  /** Location could not find the shop, or found the wrong one: the customer says where they are. */
+  function choose(s: Shop) {
+    unlockFeedback()
+    void askNotifications()
+    setChoosing(false)
+    setJoinPass(null)
+    setSimulated(false)
+    setChosen(s)
+    setState(null)
+    setError(null)
+    setOn(true)
   }
 
   function turnOff() {
@@ -212,6 +306,8 @@ export default function BillAlerts() {
     setOpened(null)
     setError(null)
     setJoinPass(null)
+    setChosen(null)
+    setChoosing(false)
     setOffline(false)
     remember(false)
     void del('/presence').catch(() => {})
@@ -221,6 +317,7 @@ export default function BillAlerts() {
     unlockFeedback()
     setError(null)
     setJoinPass(null)
+    setChosen(null)
     setSimulated(true)
     setPosition({ lat: b.lat, lon: b.lon, accuracy: 25 })
     setOn(true)
@@ -251,6 +348,10 @@ export default function BillAlerts() {
   const ready = state?.ready.filter((r) => !dismissed.includes(r.invoice_id)) ?? []
   const you = state?.you
 
+  if (choosing && !bill) {
+    return <ShopChooser buildings={buildings} likely={you?.building_ids ?? []} position={position} onPick={choose} onBack={() => setChoosing(false)} />
+  }
+
   return (
     <>
       {bill ? (
@@ -274,16 +375,16 @@ export default function BillAlerts() {
           <button className="btn block" onClick={turnOn}>
             I'm at a shop
           </button>
-          <Link to="/pay" className="text-link">
-            Find the shop myself
-          </Link>
+          <button className="text-link" onClick={() => setChoosing(true)}>
+            Choose the shop myself
+          </button>
         </div>
       ) : (
         <div className="hero">
           {you ? (
             <>
               <p className="eyebrow">
-                {you.building} {simulated && <SimBadge />}
+                {you.shop ? `${you.shop.name} · ${floorLabel(you.shop.floor)}` : you.building} {simulated && <SimBadge />}
               </p>
               <h1>Tell the cashier your name</h1>
               <div className="you">
@@ -292,18 +393,35 @@ export default function BillAlerts() {
                   {you.code}
                 </span>
               </div>
-              <p className="muted small">Keep AirSign open. Your phone buzzes when the bill arrives.</p>
+              <p className="muted small">Keep AirSign open. Your phone buzzes when the cashier sends your bill.</p>
+              {you.via === 'chosen' ? (
+                <p className="row wrap small">
+                  <button className="text-link" onClick={() => setChoosing(true)}>
+                    Change shop
+                  </button>
+                  <button className="text-link" onClick={turnOn}>
+                    Find me by location instead
+                  </button>
+                </p>
+              ) : (
+                <button className="text-link" onClick={() => setChoosing(true)}>
+                  Wrong place? Choose your shop
+                </button>
+              )}
             </>
           ) : (
             <>
-              <h1>{state?.reason === 'low_accuracy' ? "Your location isn't precise enough" : state?.reason === 'no_shop' ? 'No AirSign shop found here' : 'Finding you'}</h1>
-              {state?.reason ? (
-                <p className="muted">Enter the code on the cashier's screen instead.</p>
+              <h1>{state?.reason === 'low_accuracy' ? "Your location isn't precise enough" : state?.reason === 'no_shop' ? 'No AirSign shop found here' : error ? "Can't use your location" : 'Finding you'}</h1>
+              {state?.reason || error ? (
+                <p className="muted">Choose your shop, or enter the code on the cashier's screen.</p>
               ) : (
                 <p className="row muted">
                   <Spinner /> Checking which building you're in
                 </p>
               )}
+              <button className={`btn block ${state?.reason || error ? '' : 'quiet'}`} style={{ marginBottom: 12 }} onClick={() => setChoosing(true)}>
+                Choose my shop
+              </button>
               <form className="row" style={{ marginBottom: 12 }} onSubmit={joinWithCode}>
                 <input
                   aria-label="Code on the cashier's screen"

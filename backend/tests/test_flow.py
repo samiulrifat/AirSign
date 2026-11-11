@@ -42,13 +42,28 @@ def cashier(shop=SHOP):
     return c
 
 
+TILL_OF = {}  # invoice id -> the cashier client that created it
+
+
 def open_invoice(pos, amount="18.50"):
     r = pos.post("/api/pos/invoices", json={"amount": amount})
     assert r.status_code == 200, r.text
+    TILL_OF[r.json()["id"]] = pos
     return r.json()
 
 
-def start_payment(c, invoice_id, **extra):
+def hand_over(c, invoice_id):
+    """The cashier shows the bill's code and this customer types it: the bill is theirs.
+    Only a bill handed over like this, sent by name, or announced can be paid."""
+    tok = TILL_OF[invoice_id].post("/api/pos/checkin-token", json={"invoice_id": invoice_id}).json()
+    r = c.post("/api/checkin", json={"code": tok["code"]})
+    assert r.status_code == 200 and r.json()["invoice"]["id"] == invoice_id, r.text
+    return r.json()["checkin_pass"]
+
+
+def start_payment(c, invoice_id, handed=False, **extra):
+    if not handed:
+        hand_over(c, invoice_id)
     body = {"invoice_id": invoice_id, "confirmed_by": "popup", "location": {"lat": SHOP_LAT, "lon": SHOP_LON, "accuracy": 20}}
     body.update(extra)
     r = c.post("/api/intents", json=body)
@@ -105,10 +120,13 @@ def test_happy_path_and_receipt():
     assert near["status"] == "ok" and near["building"]["id"] == "bld_meridian"
     assert near["suggestion"] == SHOP, near  # the open invoice breaks the three-floor tie
 
-    listed = c.get(f"/api/shops/{SHOP}/invoices").json()["invoices"]
-    assert inv["id"] in [i["id"] for i in listed]
+    # Nobody sees a bill that was not sent to them, so nobody can pick a stranger's.
+    assert inv["id"] not in [i["id"] for i in c.get(f"/api/shops/{SHOP}/invoices").json()["invoices"]]
+    assert c.post("/api/intents", json={"invoice_id": inv["id"], "confirmed_by": "list"}).json()["code"] == "not_sent"
+    hand_over(c, inv["id"])
+    assert inv["id"] in [i["id"] for i in c.get(f"/api/shops/{SHOP}/invoices").json()["invoices"]]
 
-    armed = start_payment(c, inv["id"])
+    armed = start_payment(c, inv["id"], handed=True)
     intent = armed["intent"]
     assert intent["state"] == "ARMED" and intent["risk"]["tier"] == 1, intent["risk"]
     assert intent["amount_cents"] == 1850 and intent["shop"]["floor"] == 4
@@ -226,7 +244,7 @@ def test_checkin_code_verifies_location_and_is_single_use():
     r = c.post("/api/checkin", json={"code": tok["code"]})
     assert r.status_code == 200 and r.json()["invoice"]["id"] == inv["id"]
     assert c.post("/api/checkin", json={"code": tok["code"]}).status_code in (400, 409)
-    armed = start_payment(c, inv["id"], confirmed_by="code", location=None, checkin_pass=r.json()["checkin_pass"])
+    armed = start_payment(c, inv["id"], handed=True, confirmed_by="code", location=None, checkin_pass=r.json()["checkin_pass"])
     assert armed["intent"]["location_verified"] is True
     assert armed["intent"]["risk"]["contributions"]["loc"] == 0
 
@@ -245,6 +263,7 @@ def test_unapproved_order_cannot_be_armed():
     c = customer()
     enroll(c)
     inv = open_invoice(cashier(), "6.00")
+    hand_over(c, inv["id"])
     intent = c.post("/api/intents", json={"invoice_id": inv["id"], "confirmed_by": "list"}).json()
     r = c.post(f"/api/intents/{intent['id']}/approved")
     assert r.status_code == 409 and r.json()["code"] == "not_approved"
@@ -254,8 +273,15 @@ def test_someone_else_cannot_take_an_invoice_in_progress():
     a, b = customer("A"), customer("B")
     enroll(a)
     enroll(b)
-    inv = open_invoice(cashier(), "8.00")
-    start_payment(a, inv["id"])
+    pos = cashier()
+    inv = open_invoice(pos, "8.00")
+    start_payment(a, inv["id"])  # handed to A
+    r = b.post("/api/intents", json={"invoice_id": inv["id"], "confirmed_by": "list"})
+    assert r.status_code == 403 and r.json()["code"] == "not_your_bill"
+    # An announced bill is open to everyone nearby, until the first one starts paying.
+    inv = open_invoice(pos, "8.00")
+    pos.post(f"/api/pos/invoices/{inv['id']}/broadcast")
+    start_payment(a, inv["id"], handed=True)
     r = b.post("/api/intents", json={"invoice_id": inv["id"], "confirmed_by": "list"})
     assert r.status_code == 409 and r.json()["code"] == "invoice_busy"
 
@@ -272,7 +298,9 @@ def test_delete_signature_blocks_payment():
     c = customer()
     enroll(c)
     assert c.delete("/api/me/signature").json()["signature"] is None
-    r = c.post("/api/intents", json={"invoice_id": open_invoice(cashier(), "2.00")["id"], "confirmed_by": "list"})
+    inv = open_invoice(cashier(), "2.00")
+    hand_over(c, inv["id"])
+    r = c.post("/api/intents", json={"invoice_id": inv["id"], "confirmed_by": "list"})
     assert r.status_code == 409 and r.json()["code"] == "not_enrolled"
 
 

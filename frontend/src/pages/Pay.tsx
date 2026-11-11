@@ -4,10 +4,8 @@ import {
   ApiError,
   get,
   post,
-  type Building,
   type Intent,
   type Invoice,
-  type Nearby,
   type Recording,
   type Shop,
   type SignoffResult,
@@ -23,311 +21,11 @@ import type { BillStart } from '../components/BillAlerts'
 import { AirSignPad, InkCanvas, useMotion } from '../components/AirSignPad'
 
 type Loc = { lat: number; lon: number; accuracy: number; altitude?: number | null; altitude_accuracy?: number | null }
-type Found = { shop: Shop; how: 'popup' | 'list' | 'code' | 'qr' | 'sent'; checkinPass?: string; invoice?: Invoice | null }
+// How this bill reached the customer: sent by name, opened from "everyone nearby" (popup),
+// or claimed with its own QR or code. There is no way to pick a bill off a shop's list.
+type Found = { shop: Shop; how: 'popup' | 'code' | 'qr' | 'sent'; checkinPass?: string; invoice?: Invoice | null }
 
 export type CheckinState = { shop: Shop; invoice: Invoice | null; checkin_pass: string }
-
-function locate(): Promise<Loc> {
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) return reject(new Error('This browser cannot share location.'))
-    navigator.geolocation.getCurrentPosition(
-      (p) =>
-        resolve({
-          lat: p.coords.latitude,
-          lon: p.coords.longitude,
-          accuracy: p.coords.accuracy,
-          altitude: p.coords.altitude,
-          altitude_accuracy: p.coords.altitudeAccuracy,
-        }),
-      (e) => reject(new Error(e.code === e.PERMISSION_DENIED ? 'Location permission was denied.' : 'Could not get your location.')),
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 },
-    )
-  })
-}
-
-// Step 1: where am I? -------------------------------------------------------------
-
-function FindShop({ onFound, onLocation }: { onFound: (f: Found) => void; onLocation: (l: Loc | null, simulated: boolean) => void }) {
-  const { config } = useApp()
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [nearby, setNearby] = useState<Extract<Nearby, { status: 'ok' }> | null>(null)
-  const [buildings, setBuildings] = useState<Building[]>([])
-  const [listFor, setListFor] = useState<string | null>(null)
-  const [code, setCode] = useState('')
-  const [lastLoc, setLastLoc] = useState<Loc | null>(null)
-  const [noneHere, setNoneHere] = useState(false)
-
-  useEffect(() => {
-    get<Building[]>('/buildings').then(setBuildings).catch(() => {})
-  }, [])
-
-  // Location already allowed for this site: find the shop straight away instead of
-  // waiting for a tap. Without permission we wait, so the browser never asks unprompted.
-  useEffect(() => {
-    let cancelled = false
-    navigator.permissions
-      ?.query({ name: 'geolocation' as PermissionName })
-      .then((s) => {
-        if (!cancelled && s.state === 'granted') findMe()
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  async function search(loc: Loc, simulated: boolean) {
-    onLocation(loc, simulated)
-    const q = new URLSearchParams({ lat: String(loc.lat), lon: String(loc.lon), accuracy: String(Math.max(1, loc.accuracy)) })
-    if (loc.altitude != null && loc.altitude_accuracy != null) {
-      q.set('altitude', String(loc.altitude))
-      q.set('altitude_accuracy', String(loc.altitude_accuracy))
-    }
-    const r = await get<Nearby>(`/shops/nearby?${q}`)
-    if (r.status === 'ok') {
-      setNearby(r)
-      if (!r.suggestion) setListFor(r.building.id)
-    } else {
-      setError(r.message)
-      setNoneHere(r.status === 'none')
-    }
-  }
-
-  async function findMe() {
-    setBusy(true)
-    setError(null)
-    setNoneHere(false)
-    try {
-      const loc = await locate()
-      setLastLoc(loc)
-      await search(loc, false)
-    } catch (e) {
-      setError(errorText(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function simulateIn(b: Building) {
-    setBusy(true)
-    setError(null)
-    try {
-      await search({ lat: b.lat, lon: b.lon, accuracy: 25 }, true)
-    } catch (e) {
-      setError(errorText(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function placeHere(b: Building) {
-    if (!lastLoc) return
-    setBusy(true)
-    try {
-      await post('/sim/move-building', { building_id: b.id, lat: lastLoc.lat, lon: lastLoc.lon })
-      setError(null)
-      setNoneHere(false)
-      await search(lastLoc, false)
-    } catch (e) {
-      setError(errorText(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function useCode(e: React.FormEvent) {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    try {
-      const r = await post<CheckinState>('/checkin', { code })
-      onLocation(null, false)
-      onFound({ shop: r.shop, how: 'code', checkinPass: r.checkin_pass, invoice: r.invoice })
-    } catch (err) {
-      setError(errorText(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const suggested = nearby?.shops.find((s) => s.id === nearby.suggestion)
-  const listBuilding = buildings.find((b) => b.id === listFor)
-  const listShops = nearby && nearby.building.id === listFor ? nearby.shops : listBuilding?.shops ?? []
-
-  if (suggested && !listFor) {
-    return (
-      <div className="card popup">
-        <p className="tiny">{nearby!.building.name}</p>
-        <h2>Are you at {suggested.name}?</h2>
-        <p className="muted">
-          {floorLabel(suggested.floor)} · {Math.round((suggested.probability ?? 0) * 100)}% likely
-        </p>
-        <div className="grid2">
-          <button className="btn ghost" onClick={() => setListFor(nearby!.building.id)}>
-            No
-          </button>
-          <button className="btn" onClick={() => onFound({ shop: suggested, how: 'popup' })}>
-            Yes
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  if (listFor) {
-    return (
-      <div className="card">
-        <h2>Which shop are you in?</h2>
-        <p className="muted small">{nearby?.building.name ?? listBuilding?.name}, every shop by floor</p>
-        <ul className="list">
-          {[...listShops]
-            .sort((a, b) => b.floor - a.floor)
-            .map((s) => (
-              <li key={s.id}>
-                <button className="item" onClick={() => onFound({ shop: s, how: 'list' })}>
-                  <span className="row">
-                    <span className="floor">{s.floor}F</span>
-                    <span>
-                      {s.name}
-                      <br />
-                      <span className="tiny">{s.open_now === false ? 'Closed now' : s.category}</span>
-                    </span>
-                  </span>
-                  <span aria-hidden="true">›</span>
-                </button>
-              </li>
-            ))}
-        </ul>
-        <button className="btn ghost small" onClick={() => { setListFor(null); setNearby(null) }}>
-          Back
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <>
-      <div className="card">
-        <h1>Which shop are you in?</h1>
-        {error && <div className="notice warn">{error}</div>}
-        <button className="btn block" disabled={busy} onClick={findMe}>
-          {busy ? <Spinner /> : 'Find my shop'}
-        </button>
-        {noneHere && config?.allow_simulation && lastLoc && (
-          <div className="sim-strip stack" style={{ marginTop: 12 }}>
-            <h3>Simulation</h3>
-            <p className="small muted">The demo shops are somewhere else. Move a demo building to where you are standing?</p>
-            {buildings.map((b) => (
-              <button key={b.id} className="btn sim small block" disabled={busy} onClick={() => placeHere(b)}>
-                Place {b.name} here
-              </button>
-            ))}
-          </div>
-        )}
-        <hr className="sep" />
-        <form onSubmit={useCode} className="stack">
-          <label className="field" style={{ marginBottom: 0 }}>
-            <span>Or type the 6-digit code on the cashier's screen</span>
-            <input inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} placeholder="123456" />
-          </label>
-          <button className="btn quiet block" disabled={code.length !== 6 || busy}>
-            Use code
-          </button>
-        </form>
-        <hr className="sep" />
-        <details>
-          <summary>Choose the building yourself</summary>
-        <div className="stack" style={{ marginTop: 10 }}>
-          {buildings.map((b) => (
-            <button key={b.id} className="btn ghost block" onClick={() => { onLocation(null, false); setListFor(b.id) }}>
-              {b.name}
-            </button>
-          ))}
-        </div>
-        </details>
-      </div>
-      {config?.allow_simulation && (
-        <DemoControls>
-          <p className="small muted">Pretend this phone is inside a building.</p>
-          {buildings.map((b) => (
-            <button key={b.id} className="btn sim small block" disabled={busy} onClick={() => simulateIn(b)}>
-              I'm in {b.name}
-            </button>
-          ))}
-        </DemoControls>
-      )}
-    </>
-  )
-}
-
-// Step 2: which invoice? ------------------------------------------------------------
-
-function PickInvoice({ found, onPick, onBack, autoPick }: { found: Found; onPick: (inv: Invoice) => void; onBack: () => void; autoPick: boolean }) {
-  const [invoices, setInvoices] = useState<Invoice[] | null>(null)
-
-  // Exactly one open bill at this shop: that is the customer's, no need to ask.
-  useEffect(() => {
-    if (autoPick && invoices?.length === 1) onPick(invoices[0])
-  }, [autoPick, invoices, onPick])
-
-  useEffect(() => {
-    let stop = false
-    const load = async () => {
-      try {
-        const r = await get<{ invoices: Invoice[] }>(`/shops/${found.shop.id}/invoices`)
-        if (!stop) setInvoices(r.invoices)
-      } catch {
-        if (!stop) setInvoices([])
-      }
-    }
-    load()
-    const t = setInterval(load, 3000)
-    return () => {
-      stop = true
-      clearInterval(t)
-    }
-  }, [found.shop.id])
-
-  return (
-    <div className="card">
-      <p className="tiny">
-        {found.shop.name} · {floorLabel(found.shop.floor)}
-      </p>
-      <h2>{invoices && invoices.length > 1 ? 'Which one is yours?' : 'Your bill'}</h2>
-      {invoices === null ? (
-        <Spinner />
-      ) : invoices.length === 0 ? (
-        <div className="notice">
-          <span className="row">
-            <Spinner /> Waiting for the cashier to create your bill…
-          </span>
-        </div>
-      ) : (
-        <ul className="list">
-          {invoices.map((inv) => (
-            <li key={inv.id}>
-              <button className="item" onClick={() => onPick(inv)}>
-                <span>
-                  <strong>{money(inv.amount_cents, inv.currency)}</strong>
-                  <br />
-                  <span className="tiny">
-                    {inv.items.length ? inv.items.map((i) => `${i.qty}× ${i.name}`).join(', ') : 'No item list'} ·{' '}
-                    {new Date(inv.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </span>
-                <span aria-hidden="true">›</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <button className="btn ghost small" onClick={onBack} style={{ marginTop: 8 }}>
-        Wrong shop
-      </button>
-    </div>
-  )
-}
 
 // Shared: what is being paid, always from the server record ------------------------
 
@@ -746,7 +444,7 @@ export default function Pay() {
   const navigate = useNavigate()
   const routerState = useLocation().state as { checkin?: CheckinState; bill?: BillStart } | null
   const bill = routerState?.bill
-  const [found, setFound] = useState<Found | null>(
+  const [found] = useState<Found | null>(
     routerState?.checkin
       ? { shop: routerState.checkin.shop, how: 'qr', checkinPass: routerState.checkin.checkin_pass, invoice: routerState.checkin.invoice }
       : bill
@@ -754,14 +452,12 @@ export default function Pay() {
         : null,
   )
   const [invoice, setInvoice] = useState<Invoice | null>(routerState?.checkin?.invoice ?? bill?.invoice ?? null)
-  const [loc, setLoc] = useState<{ loc: Loc | null; simulated: boolean }>({ loc: bill?.location ?? null, simulated: bill?.simulated ?? false })
+  const [loc] = useState<{ loc: Loc | null; simulated: boolean }>({ loc: bill?.location ?? null, simulated: bill?.simulated ?? false })
   const [intent, setIntent] = useState<Intent | null>(null)
   const [nonce, setNonce] = useState<string | null>(null)
   const [lastResult, setLastResult] = useState<SignoffResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  // After the customer has gone back once, stop choosing the bill for them.
-  const [pickedManually, setPickedManually] = useState(false)
 
   // Resume an existing payment from its id.
   useEffect(() => {
@@ -793,6 +489,8 @@ export default function Pay() {
 
   if (me && !me.user) return <Navigate to="/" replace />
   if (me?.user && !me.signature && !id) return <Navigate to="/enroll" replace />
+  // Bills reach this page from the home screen, a QR scan or a code. Nothing to pay here otherwise.
+  if (!id && !intent && (!found || !invoice)) return <Navigate to="/" replace />
 
   async function startIntent() {
     if (!found || !invoice) return
@@ -819,10 +517,13 @@ export default function Pay() {
 
   async function cancel() {
     if (intent) await post(`/intents/${intent.id}/cancel`).catch(() => {})
-    navigate('/pay', { replace: true })
-    setIntent(null)
-    setFound(null)
-    setInvoice(null)
+    navigate('/', { replace: true })
+  }
+
+  /** Not mine: a bill sent by name goes back to the cashier, who can send it to the right person. */
+  async function notMine() {
+    if (found && invoice && found.how !== 'popup') await post(`/bills/${invoice.id}/decline`).catch(() => {})
+    navigate('/', { replace: true })
   }
 
   let body
@@ -868,21 +569,7 @@ export default function Pay() {
     }
   } else if (id) {
     body = error ? <div className="notice bad">{error}</div> : <Spinner />
-  } else if (!found) {
-    body = <FindShop onFound={setFound} onLocation={(l, s) => setLoc({ loc: l, simulated: s })} />
-  } else if (!invoice) {
-    body = (
-      <PickInvoice
-        found={found}
-        autoPick={!pickedManually}
-        onPick={setInvoice}
-        onBack={() => {
-          setFound(null)
-          setPickedManually(true)
-        }}
-      />
-    )
-  } else {
+  } else if (found && invoice) {
     body = (
       <div className="card">
         <p className="tiny">
@@ -901,15 +588,7 @@ export default function Pay() {
             <Spinner /> Getting your payment ready…
           </div>
         )}
-        <button
-          className="btn ghost small"
-          style={{ marginTop: 8 }}
-          onClick={() => {
-            setInvoice(null)
-            setError(null)
-            setPickedManually(true)
-          }}
-        >
+        <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => void notMine()}>
           Not my bill
         </button>
       </div>

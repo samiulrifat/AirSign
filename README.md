@@ -1,6 +1,6 @@
 # AirSign
 
-**Pay in a shop with a move of your phone.** The cashier snaps a photo of the items or says the order, and **Google Gemini** drafts the bill. Your phone alerts you, and you confirm by moving it in a personal *air signature*, recorded by its gyroscope and accelerometer. Save your **PayPal** account once with **PayPal Vault**, and the air signature is all a normal payment needs. AI models check the motion, catch replays and fake sensor data, and decide how strict the check should be. Only a passing signature lets the server take the payment through PayPal.
+**Pay in a shop with a move of your phone.** The cashier shows the products to a live camera or says the order, and **Google Gemini** builds the bill. Your phone alerts you, and you confirm by moving it in a personal *air signature*, recorded by its gyroscope and accelerometer. Save your **PayPal** account once with **PayPal Vault**, and the air signature is all a normal payment needs. AI models check the motion, catch replays and fake sensor data, and decide how strict the check should be. Only a passing signature lets the server take the payment through PayPal.
 
 No card, no PIN, no terminal: just a mobile browser. Built for the PayPal x AI hackathon *Build What's Next with PayPal and AI*. Everything runs on the **PayPal sandbox**, and no real money moves.
 
@@ -11,13 +11,13 @@ No card, no PIN, no terminal: just a mobile browser. Built for the PayPal x AI h
 1. Open the app on a phone (HTTPS is needed for motion sensors and location; see [Run on a phone](#run-on-a-phone)).
 2. Enter a name, give consent, and **set up your air signature**: 7 repetitions of a 2–4 second gesture, like your initials drawn in the air.
 3. Tap **Save my PayPal** once, then **I'm at a shop**. Your name and a short code appear on the phone.
-4. On a second screen (laptop), open **`/pos`**, pick **Lumen Books**, PIN **`1234`**. Say or type the order (or snap a photo, with a Gemini key), and create the bill.
+4. On a second screen (laptop), open **`/pos`**, pick **Lumen Books**, PIN **`1234`**. Say or type the order, or tap **Scan with camera** and show each product (with a Gemini key). Everything adds up on one bill; say "remove the tea" or "clear all" to change it. Then create the bill.
 5. Send it: in **Person** mode tap your name. In **AI auto** mode the till asks your name out loud; answer it, or type it.
 6. The phone buzzes. Tap **Sign to pay**, wait for green, and sign in the air.
 7. The receipt shows your signature and what the AI checked, and the cashier screen flips to *Paid*. The PayPal webhook confirms it a moment later.
 
 **No phone, or not in the shop?** Simulation mode is built in and clearly labeled:
-- *Simulated location*: "I am in Meridian Arcade", or "Place this building here" to move a demo building to where you stand.
+- *Simulated location*: the demo buildings have made-up addresses, so the till moves its own building to where it stands when it opens (Demo controls on `/pos`). The phone also offers "I'm in Meridian Arcade" and "Place this building here". If location still fails, tap **Choose my shop**: your name goes on that shop's list.
 - *Simulated signature*: enroll and sign with a synthetic signature that has natural variation, sensor noise and timing jitter.
 - *Simulated attackers*: someone who watched you, a different person, generated sensor data, and a replay of your last good signature.
 
@@ -168,13 +168,13 @@ Never commit `.env`.
 
 ```
 Cashier POS ──invoice──▶ ┌──────────────── AirSign backend (FastAPI) ────────────────┐ ──▶ PayPal sandbox
-Shop QR / code ─token──▶ │ shop ranking · risk engine · gesture match · replay check │     Orders v2 (create,
+Shop QR / code ─token──▶ │ bill routing · risk engine · gesture match · replay check │     Orders v2 (create,
 Customer phone ◀──API──▶ │ intent state machine · PayPal client · DB + audit log     │ ◀── get, capture),
                          └────────────────────────────────────────────────────────────┘     webhooks
 ```
 
-1. **Invoice.** The cashier taps items, or lets the AI cashier draft them from a photo or a spoken order, and confirms. Amount and recipient are stored on the server, and the phone never supplies them.
-2. **Sending the bill or shop detection.** A customer who tapped *I'm at a shop* gets the bill on their phone once the cashier picks them, or the till matches their spoken name. Otherwise browser location finds the *building* and the shop ranker picks the *shop* (shops on floors 3, 4 and 5 share coordinates); the customer confirms, picks from the list, or types the counter's rotating code.
+1. **Invoice.** The cashier taps items, shows them to the live camera, or says or types the order, and confirms. Every input adds to the same bill, and spoken or typed changes can remove, change or clear items. Amount and recipient are stored on the server, and the phone never supplies them.
+2. **Sending the bill.** A customer taps *I'm at a shop*. Browser location finds the *building* (a position that fits two buildings lists them in both), and only the building and a short code are stored. If location fails, the customer chooses the shop or types the counter's rotating code. Either way their first name appears on the till, and the bill reaches them only when the cashier picks them, or the till matches their spoken name. The server lets only that customer pay it. A bill's own QR code or code hands it to whoever scans it at the counter, and *Alert everyone nearby* lets the first person who opens it pay.
 3. **PayPal.** With a saved account (PayPal Vault) and a bill up to $200, this step is skipped: no PayPal order exists yet, because creating one with a saved account captures it at once. Otherwise the server creates an Orders v2 order (intent `CAPTURE`), the buyer approves with the **PayPal JavaScript SDK v6**, and the server checks the approval and amount with PayPal. Nothing is captured yet.
 4. **Risk tier and nonce.** The risk engine picks tier 1, 2 or 3, and the server issues a 128-bit single-use nonce valid for 120 s.
 5. **Sign in the air, hands-free.** Hold the phone still: the pad turns green, buzzes and plays a tone where the browser allows it. Moving the phone starts the recording, and holding still again ends it; the half-second of stillness before the first stroke is kept, because the server measures the sensor noise there. The signature appears as pen ink, reconstructed from the phone's in-plane movement (accelerometer) and wrist rotation (gyroscope), with a short Redo window before it is sent. Start and stop use a short average of the motion, so small shakes don't trigger them. Twitches that are too short or weak to be a signature are discarded without using up an attempt. The ink is only a picture for the person; the verifier works on the raw sensor data.
@@ -187,13 +187,13 @@ Customer phone ◀──API──▶ │ intent state machine · PayPal client �
 
 | Component | What it does | Code |
 |---|---|---|
-| **AI cashier (Gemini)** | Reads a counter photo or a typed or spoken order with structured output, and picks catalog items and quantities. It cannot set prices or invent items: the server drops unknown ids and takes prices from the catalog, and the cashier confirms every draft. Typed orders fall back to a keyword match without Gemini. | `ai/cashier.py`, `ai/gemini.py` |
+| **AI cashier (Gemini)** | Watches the counter through a live camera (a frame goes to Gemini only when the view changes and holds still, and only newly shown items are added), and turns typed or spoken changes into add, remove, set and clear operations on the bill, with structured output. It cannot set prices or invent items: the server drops unknown ids and takes prices from the catalog, and the cashier confirms every draft. Typed orders fall back to a keyword match without Gemini. | `ai/cashier.py`, `ai/gemini.py` |
+| **Shop ranking** | When a customer chooses the shop themselves, a softmax over distance likelihood, floor hint (when altitude accuracy allows), visit history, opening hours, time of day, and *which shop just opened a bill* orders the shops and marks the most likely one (p ≥ 0.6 and a lead of ≥ 0.2). It only helps the customer pick; the cashier still sends the bill. | `shops.py` |
 | **Name matching** | Matches a spoken name to the customers nearby, by spelling and by consonants, and sends only on one clear match. It runs on our server, so names never go to Gemini. | `ai/names.py` |
 | **Risk reasons (Gemini)** | Rewrites why a payment needs a stricter check in plain words, from the reasons the risk engine already computed. The decision is committed first and never depends on Gemini, and any failure keeps the template sentence. | `ai/explain.py` |
 | **Gesture match** | 6-channel IMU signal → resample to 50 Hz → 10 Hz Butterworth (zero-phase) → segmentation → per-channel z-norm. Dynamic Time Warping (Sakoe-Chiba band) against the enrolled repetitions; a personal threshold learned from the user's own variation. A Siamese 1D CNN (NumPy inference) fuses in when trained weights are present. | `signal/pipeline.py`, `dtw.py`, `enroll.py`, `verify.py`, `siamese.py` |
 | **Replay and fake-data check** | Near-exact match against enrollment and earlier accepted signatures (compact encrypted fingerprints, not raw data); sensor-plausibility features: high-frequency noise floor, timestamp jitter, autocorrelation, cross-channel coherence, declared vs measured rate. | `signal/replay.py`, `fingerprint.py` |
 | **Risk engine** | Transparent weighted rules (amount vs your median, new shop, unusual hour, velocity, distance, new device), plus an **isolation forest** on your own history, calibrated to your history's quantiles. Template-built explanation sentences, so the model cannot invent reasons. | `risk.py` |
-| **Shop ranking** | Softmax over distance likelihood, floor hint (when altitude accuracy allows), visit history, opening hours, time of day, and *which shop just opened a bill*. It suggests a shop only if p ≥ 0.6 and leads the next by ≥ 0.2. | `shops.py` |
 
 ### Security and privacy
 
@@ -211,7 +211,7 @@ We found these while building, and the code comments explain each one:
 
 - **Threshold statistics.** Enrollment μ/σ are computed *leave-one-out with the same mean-of-3-nearest statistic* used to score a candidate. The all-pairs statistic in the report is not comparable and makes the threshold far too lenient. σ also has a floor, because it comes from only 5–10 scores.
 - **Isolation forest calibration.** The report's `R_ml = 100 · s` would put almost every ordinary payment in tier 2 (normal points score about 0.5), so we use the quantile against the user's own history instead.
-- **Open-bill feature in shop ranking.** Without it, a first-time visitor in a multi-floor building always ties, and the popup could never suggest a shop.
+- **The cashier sends every bill.** The report let the phone guess the shop and pick an open bill from its list. With several customers at one counter, the wrong person could take a bill, so a customer's location or choice now only puts their name on the cashier's list.
 - **Separate replay bounds** for DTW distances and fingerprint distances, instead of one bound for two different scales.
 - **The receipt comes from the capture response**, and the webhook reconciles it. Sandbox webhooks can lag by seconds.
 - **Thresholds live in a config file** (`backend/models/thresholds.json`) and are applied when scoring, not baked into templates, so they can be retuned without anyone enrolling again. With only 5–10 enrollment repetitions the personal σ is unreliable, so σ has a relative floor (a fraction of μ) and an absolute one. Channels are standardized, so DTW distances share one scale across people, and the absolute floor stops one lucky, very consistent enrollment from making the threshold impossibly tight. Calibration picks both from data.
@@ -244,7 +244,7 @@ Dockerfile, render.yaml, .github/workflows/  free deployment, keep-alive, CI
 
 | Tool | How we used it |
 |---|---|
-| **Google Gemini API** (`gemini-3.8-flash`, `gemini-3.5-flash-lite`) | AI cashier (photo and order to draft bill) and plain-language risk reasons |
+| **Google Gemini API** (`gemini-3.8-flash`, `gemini-3.5-flash-lite`) | AI cashier (live camera and spoken orders to bill changes) and plain-language risk reasons |
 | **PayPal Orders API v2** | Create, verify approval of and capture the order for each in-store bill; idempotent capture with `PayPal-Request-Id` |
 | **PayPal Vault** (Payment Method Tokens v3) | Save a PayPal account once, then charge it with `vault_id` only after a passing air signature |
 | **PayPal Python Server SDK** (`paypal-server-sdk`) | Server-side Orders calls in sandbox mode |

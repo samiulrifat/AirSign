@@ -138,6 +138,11 @@ class Presence(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
     building_id: Mapped[str] = mapped_column(ForeignKey("buildings.id"), index=True)
     code: Mapped[str] = mapped_column(String(4))
+    # Every building the phone could be in, as ",id1,id2,". A location that fits two
+    # buildings lists the customer in both, so a cashier never misses them.
+    buildings: Mapped[str | None] = mapped_column(String, nullable=True)
+    via: Mapped[str] = mapped_column(String(8), default="location")  # location, code or chosen
+    shop_id: Mapped[str | None] = mapped_column(String, nullable=True)  # the shop the customer chose
     simulated: Mapped[bool] = mapped_column(Boolean, default=False)
     arrived_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
     last_seen: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, index=True)

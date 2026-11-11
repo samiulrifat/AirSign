@@ -56,6 +56,9 @@ NEW_COLUMNS = [
     ("payment_intents", "funding", "VARCHAR(8) DEFAULT 'order'"),
     ("invoices", "customer_id", "VARCHAR"),
     ("invoices", "broadcast", "BOOLEAN DEFAULT FALSE"),
+    ("presence", "buildings", "VARCHAR"),
+    ("presence", "via", "VARCHAR(8) DEFAULT 'location'"),
+    ("presence", "shop_id", "VARCHAR"),
 ]
 
 

@@ -3,8 +3,10 @@ import QRCode from 'qrcode'
 import { get, post, type Invoice, type Shop } from '../lib/api'
 import { errorText, floorLabel, money, useApp } from '../lib/app'
 import { canListen, listen, listenProblem, speak, stopSpeaking } from '../lib/speech'
-import { CheckIcon, SimBadge, Spinner, TopBar } from '../components/bits'
+import { CheckIcon, DemoControls, SimBadge, Spinner, TopBar } from '../components/bits'
 import VoiceAssistant from '../components/VoiceAssistant'
+import CameraScanner from '../components/CameraScanner'
+import { applyDraft, cents, describeDraft, type Draft, type Line } from '../lib/cart'
 
 type Customer = { name: string; code: string | null }
 type PosInvoice = Invoice & {
@@ -12,10 +14,8 @@ type PosInvoice = Invoice & {
   customer: Customer | null
   payment: { state: string; tier: number | null; simulated: boolean; webhook_confirmed: boolean } | null
 }
-type Line = { name: string; qty: number; price: string }
-type Draft = { lines: Line[]; unmatched: string[]; source: 'gemini' | 'keywords' }
 type CatalogItem = { name: string; price: string }
-type Nearby = { id: string; name: string; code: string; arrived_at: string; simulated: boolean }
+type Nearby = { id: string; name: string; code: string; arrived_at: string; simulated: boolean; via: 'location' | 'code' | 'chosen'; chose: string | null }
 type Mode = 'person' | 'ai'
 type NameMatch = { status: 'sent' | 'choose' | 'nobody'; candidates: Nearby[]; customer: Customer | null }
 
@@ -92,18 +92,21 @@ function Login({ onLogin }: { onLogin: (s: Shop) => void }) {
   )
 }
 
-function OrderInput({ onDraft }: { onDraft: (d: Draft) => void }) {
+function OrderInput({ lines, onDraft }: { lines: Line[]; onDraft: (d: Draft) => void }) {
   const { config } = useApp()
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [listening, setListening] = useState(false)
+  const [scanning, setScanning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const hasCamera = Boolean(navigator.mediaDevices?.getUserMedia)
 
   async function ask(body: { text?: string; image?: string }) {
     setBusy(true)
     setError(null)
     try {
-      onDraft(await post<Draft>('/pos/ai-bill', body))
+      // The bill on screen goes along, so "remove the tea" or "make it three" makes sense.
+      onDraft(await post<Draft>('/pos/ai-bill', { ...body, cart: lines.map(({ name, qty }) => ({ name, qty })) }))
       setText('')
     } catch (e) {
       setError(errorText(e))
@@ -129,7 +132,7 @@ function OrderInput({ onDraft }: { onDraft: (d: Draft) => void }) {
     const heard = await listen()
     setListening(false)
     if (heard[0]) await ask({ text: heard[0] })
-    else setError(listenProblem() ?? 'Nothing was heard. Say the order again, or type it.')
+    else setError(listenProblem() ?? 'Nothing was heard. Say it again, or type it.')
   }
 
   return (
@@ -141,13 +144,18 @@ function OrderInput({ onDraft }: { onDraft: (d: Draft) => void }) {
           if (text.trim()) void ask({ text })
         }}
       >
-        <input type="text" aria-label="Describe the order" maxLength={300} value={text} placeholder="Two paperbacks and a notebook" onChange={(e) => setText(e.target.value)} />
+        <input type="text" aria-label="Add, remove or change items" maxLength={300} value={text} placeholder={lines.length ? 'Add a pen, or remove the notebook' : 'Two paperbacks and a notebook'} onChange={(e) => setText(e.target.value)} />
         <button className="btn" disabled={busy || !text.trim()}>
-          {busy ? <Spinner /> : 'Draft'}
+          {busy ? <Spinner /> : 'Go'}
         </button>
       </form>
       <div className="row wrap" style={{ marginTop: 8 }}>
-        {config?.gemini && (
+        {config?.gemini && hasCamera && (
+          <button type="button" className={`btn small ${scanning ? 'quiet' : ''}`} onClick={() => setScanning(!scanning)}>
+            {scanning ? 'Close camera' : 'Scan with camera'}
+          </button>
+        )}
+        {config?.gemini && !hasCamera && (
           <label className={`btn quiet small${busy ? ' disabled' : ''}`}>
             Snap the counter
             <input type="file" accept="image/*" capture="environment" hidden disabled={busy} onChange={photo} />
@@ -155,34 +163,39 @@ function OrderInput({ onDraft }: { onDraft: (d: Draft) => void }) {
         )}
         {canListen() && (
           <button type="button" className="btn quiet small" disabled={busy || listening} onClick={sayOrder}>
-            {listening ? 'Listening…' : 'Say the order'}
+            {listening ? 'Listening…' : 'Say it'}
           </button>
         )}
-        <span className="tiny">{config?.gemini ? 'Read by Google Gemini. Keep people out of photos.' : 'Add AIRSIGN_GEMINI_API_KEY to read photos.'}</span>
+        <span className="tiny">{config?.gemini ? 'Read by Google Gemini. Keep people out of the camera.' : 'Add AIRSIGN_GEMINI_API_KEY to use the camera.'}</span>
       </div>
+      {scanning && <CameraScanner onAdd={onDraft} onClose={() => setScanning(false)} />}
       {error && <div className="notice warn" style={{ margin: '8px 0 0' }}>{error}</div>}
     </div>
   )
 }
 
-function NewInvoice({ onCreated }: { onCreated: (inv: Invoice) => void }) {
+type Note = { text: string; ok: boolean; unmatched: string[]; source: Draft['source'] }
+
+function NewInvoice({ lines, setLines, onCreated }: { lines: Line[]; setLines: React.Dispatch<React.SetStateAction<Line[]>>; onCreated: (inv: Invoice) => void }) {
   const [catalog, setCatalog] = useState<CatalogItem[]>([])
-  const [draft, setDraft] = useState<Draft | null>(null)
-  const [lines, setLines] = useState<Line[]>([])
+  const [note, setNote] = useState<Note | null>(null)
   const [amount, setAmount] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const total = lines.reduce((t, l) => t + l.qty * Math.round(parseFloat(l.price) * 100), 0)
+  const total = cents(lines)
 
   useEffect(() => {
     get<CatalogItem[]>('/pos/catalog').then(setCatalog).catch(() => {})
   }, [])
 
   function add(name: string, price: string) {
-    setLines((ls) => {
-      const i = ls.findIndex((l) => l.name === name)
-      if (i >= 0) return ls.map((l, j) => (j === i ? { ...l, qty: l.qty + 1 } : l))
-      return [...ls, { name, qty: 1, price }]
-    })
+    setLines((ls) => applyDraft(ls, { clear: false, ops: [{ action: 'add', name, qty: 1, price }] }))
+  }
+
+  /** Every input adds to the same bill. Only a spoken or typed "clear" empties it. */
+  function applyAi(d: Draft) {
+    setLines((ls) => applyDraft(ls, d))
+    const change = describeDraft(d)
+    setNote({ text: change ?? "That didn't match anything this shop sells. The bill is unchanged.", ok: Boolean(change), unmatched: d.unmatched, source: d.source })
   }
 
   async function create() {
@@ -192,7 +205,7 @@ function NewInvoice({ onCreated }: { onCreated: (inv: Invoice) => void }) {
       onCreated(await post<Invoice>('/pos/invoices', body))
       setLines([])
       setAmount('')
-      setDraft(null)
+      setNote(null)
     } catch (e) {
       setError(errorText(e))
     }
@@ -200,17 +213,20 @@ function NewInvoice({ onCreated }: { onCreated: (inv: Invoice) => void }) {
 
   return (
     <div className="card">
-      <h2>New bill</h2>
-      <OrderInput
-        onDraft={(d) => {
-          setDraft(d)
-          setLines(d.lines)
-        }}
-      />
-      {draft && (
-        <div className={`notice ${draft.lines.length ? 'ok' : 'warn'}`}>
-          {draft.lines.length ? `${draft.source === 'gemini' ? 'Drafted by Gemini' : 'Drafted by keyword match'}. Check it, then create the bill.` : 'Nothing matched what this shop sells.'}
-          {draft.unmatched.length > 0 && <div className="tiny">Not in your catalog: {draft.unmatched.join(', ')}</div>}
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <h2>New bill</h2>
+        {lines.length > 0 && (
+          <button className="btn ghost small" onClick={() => setLines([])}>
+            Clear all
+          </button>
+        )}
+      </div>
+      <OrderInput lines={lines} onDraft={applyAi} />
+      {note && (
+        <div className={`notice ${note.ok ? 'ok' : 'warn'}`}>
+          {note.text}
+          {note.ok && note.source === 'keywords' && <span className="tiny"> (keyword match)</span>}
+          {note.unmatched.length > 0 && <div className="tiny">Not in your catalog: {note.unmatched.join(', ')}</div>}
         </div>
       )}
       <div className="catalog">
@@ -312,7 +328,10 @@ function NearbyList({ people, onPick, busy }: { people: Nearby[]; onPick: (p: Ne
                 <strong>{p.name}</strong>
                 <br />
                 <span className="tiny">
-                  {minutesAgo(p.arrived_at, now)} {p.simulated && '· simulated'}
+                  {minutesAgo(p.arrived_at, now)}
+                  {p.via === 'chosen' && ` · chose ${p.chose ?? 'a shop'} on their phone`}
+                  {p.via === 'code' && ' · joined with your code'}
+                  {p.simulated && ' · simulated'}
                 </span>
               </span>
             </span>
@@ -529,8 +548,74 @@ function BillPanel({ invoice, mode, people, autoAsk, reload }: { invoice: PosInv
   )
 }
 
+const LINES_KEY = 'airsign.pos-bill'
+
+function savedLines(): Line[] {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(LINES_KEY) ?? '[]')
+    return Array.isArray(v) ? (v as Line[]) : []
+  } catch {
+    return []
+  }
+}
+
+type Placed = { name: string; radius_m: number } | 'asking' | 'denied' | null
+const PLACED_KEY = 'airsign.placed-'
+
+/**
+ * Demo only. The demo buildings have made-up addresses, so the till moves its building to
+ * where it stands, once per session. Phones at the counter then find the shop by location.
+ */
+function usePlaceBuilding(shop: Shop | null | undefined, enabled: boolean): [Placed, () => void] {
+  const [placed, setPlaced] = useState<Placed>(null)
+  const key = shop ? PLACED_KEY + shop.id : null
+  const place = useCallback(() => {
+    if (!shop || !navigator.geolocation) return
+    setPlaced('asking')
+    navigator.geolocation.getCurrentPosition(
+      (p) =>
+        post<{ name: string; radius_m: number }>('/pos/sim/place-building', { lat: p.coords.latitude, lon: p.coords.longitude, accuracy: Math.max(1, p.coords.accuracy) })
+          .then((r) => {
+            setPlaced(r)
+            try {
+              sessionStorage.setItem(PLACED_KEY + shop.id, JSON.stringify(r))
+            } catch {
+              /* asks again next time */
+            }
+          })
+          .catch(() => setPlaced(null)),
+      () => setPlaced('denied'),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
+    )
+  }, [shop])
+  useEffect(() => {
+    if (!key || !enabled) return
+    let before: Placed = null
+    try {
+      before = JSON.parse(sessionStorage.getItem(key) ?? 'null') as Placed
+    } catch {
+      /* place it */
+    }
+    if (before) setPlaced(before)
+    else place()
+  }, [key, enabled, place])
+  return [placed, place]
+}
+
 export default function Pos() {
+  const { config } = useApp()
   const [shop, setShop] = useState<Shop | null | undefined>(undefined)
+  // One bill being built, shared by taps, typing, the camera and the voice assistant.
+  // Kept for this browser tab, so an accidental reload does not lose it.
+  const [lines, setLines] = useState<Line[]>(savedLines)
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(LINES_KEY, JSON.stringify(lines))
+    } catch {
+      /* it just lasts until the page reloads */
+    }
+  }, [lines])
+  const [placed, placeAgain] = usePlaceBuilding(shop, Boolean(config?.allow_simulation))
   const [invoices, setInvoices] = useState<PosInvoice[]>([])
   const [people, setPeople] = useState<Nearby[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -614,6 +699,7 @@ export default function Pos() {
               className="btn ghost small"
               onClick={async () => {
                 await post('/pos/logout')
+                setLines([])
                 setShop(null)
               }}
             >
@@ -624,6 +710,8 @@ export default function Pos() {
             <div>
               {mode === 'ai' && (
                 <VoiceAssistant
+                  lines={lines}
+                  setLines={setLines}
                   onCreated={(inv) => {
                     setSelected(inv.id)
                     setJustCreated(inv.id)
@@ -632,6 +720,8 @@ export default function Pos() {
                 />
               )}
               <NewInvoice
+                lines={lines}
+                setLines={setLines}
                 onCreated={(inv) => {
                   setSelected(inv.id)
                   setJustCreated(mode === 'ai' ? inv.id : null)
@@ -681,6 +771,22 @@ export default function Pos() {
                   </table>
                 )}
               </details>
+              {config?.allow_simulation && (
+                <DemoControls>
+                  <p className="small muted">
+                    {placed === 'asking'
+                      ? 'Finding where this till is…'
+                      : placed === 'denied'
+                        ? "Location is off for this till, so phones can't find the shop by location. Customers can still choose the shop on their phone, or scan your code."
+                        : placed
+                          ? `${placed.name} is placed where this till is${placed.radius_m > 100 ? ` (about ${Math.round(placed.radius_m)} m across, since this device's location is rough)` : ''}, so phones here find it.`
+                          : 'The demo shops have made-up addresses. Place this shop where the till is so phones here find it.'}
+                  </p>
+                  <button className="btn sim small" disabled={placed === 'asking'} onClick={placeAgain}>
+                    Place {shop.name}'s building here
+                  </button>
+                </DemoControls>
+              )}
             </div>
             <div>
               {current ? (

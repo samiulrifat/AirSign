@@ -120,6 +120,11 @@ def create_intent(
         raise IntentError("invoice_closed", "This invoice is no longer open.", 409)
     if invoice.customer_id not in (None, user.id):
         raise IntentError("not_your_bill", "The cashier sent this bill to someone else.", 403)
+    # A bill is paid only by the customer the cashier sent it to, someone who scanned its
+    # code at the counter (which sends it to them), or, after "alert everyone nearby", the
+    # first person to open it. Nobody can pick a stranger's bill off a list.
+    if invoice.customer_id is None and not invoice.broadcast:
+        raise IntentError("not_sent", "Ask the cashier to send this bill to you, or scan its code.", 403)
 
     active = db.scalars(
         select(PaymentIntent).where(PaymentIntent.invoice_id == invoice.id, PaymentIntent.state.not_in(tuple(TERMINAL)))
